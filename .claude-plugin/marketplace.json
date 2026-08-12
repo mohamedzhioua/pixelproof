@@ -1,0 +1,15 @@
+{
+  "name": "pixelproof",
+  "description": "Generate and verify spec-driven raster and vector assets with Pixelproof.",
+  "owner": {
+    "name": "mohamedzhioua"
+  },
+  "plugins": [
+    {
+      "name": "pixelproof",
+      "description": "Generate and verify spec-driven raster and vector assets from Claude Code.",
+      "version": "0.1.0",
+      "source": "./"
+    }
+  ]
+}

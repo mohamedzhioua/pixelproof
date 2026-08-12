@@ -1,0 +1,20 @@
+{
+  "name": "product-hero",
+  "description": "Square product hero on seamless white with a reserved lower-right lockup area",
+  "mechanical": {
+    "width": 1254,
+    "height": 1254,
+    "aspect": "1:1",
+    "corners": { "expect": "#FFFFFF", "tolerance": 3 },
+    "alpha": "opaque"
+  },
+  "semantic": [
+    "Background is seamless white edge to edge - no floor plane, wall, horizon or studio sweep",
+    "Zero text, letters, numbers, watermarks, labels or signage anywhere in the frame",
+    "No logo or badge drawn on any surface of the product",
+    "No people, hands, vehicles, tools or scale figures",
+    "Subject is horizontally centred and fully inside the frame",
+    "Lower-right corner area is empty white, reserved for a logo added later by code"
+  ],
+  "retakes": 3
+}

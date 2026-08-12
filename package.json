@@ -1,0 +1,19 @@
+{
+  "name": "pixelproof",
+  "version": "0.1.0",
+  "description": "Spec-driven image generation and two-tier verification for Claude Code.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "test": "node --test --test-concurrency=1 --test-timeout=120000 \"test/*.test.mjs\"",
+    "verify": "node scripts/verify.mjs"
+  },
+  "optionalDependencies": {
+    "sharp": "^0.34.0"
+  },
+  "license": "MIT"
+}
