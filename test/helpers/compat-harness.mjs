@@ -43,30 +43,45 @@ export async function removeTemporaryDirectory(directory) {
 }
 
 /**
- * Copy the verifier into `root` so it runs where `sharp` cannot be resolved,
- * which is how the degraded CLI path is exercised without uninstalling anything.
+ * Copy one module into `root`, at its repo-relative location, together with
+ * every layer it imports — so it runs where `sharp` (or any other optional
+ * dependency) cannot be resolved. That is how the degraded paths are exercised
+ * without uninstalling anything.
  *
- * The whole module tree is copied, not just the entry file: the verifier imports
- * `../core/`, and a lone copy would fail with a missing-module error rather than
- * a missing-decoder one. Those fail identically from the outside, so a test that
- * copied only the entry point would still be green while proving nothing.
+ * The layers matter. Copying a subset makes the run fail with
+ * ERR_MODULE_NOT_FOUND, which from outside is indistinguishable from the
+ * missing-dependency condition this helper exists to create — a test that
+ * "passes" for the wrong reason, or fails for one. Layout is preserved so the
+ * module's own relative specifiers (`../core/...`) resolve unchanged, which is
+ * what lets an isolated module be a thin one rather than a self-contained copy.
  *
- * Isolation comes from the destination having no `node_modules`. In-process
- * callers should inject `loadDecoder` instead; this exists for CLI-level tests,
- * where there is deliberately no flag to defeat decoder discovery.
+ * Isolation itself comes from the destination having no `node_modules`.
+ *
+ * @param {string} root destination directory (a fresh temporary directory)
+ * @param {string} modulePath repo-relative POSIX path of the module to isolate
+ * @param {string[]} layers repo-relative top-level directories it imports
+ * @returns {Promise<string>} absolute path of the isolated module
  */
-export async function isolateVerifier(root) {
-  const isolatedVerifier = path.join(root, 'scripts', 'verify.mjs');
-  await mkdir(path.dirname(isolatedVerifier), { recursive: true });
-  // Every layer the verifier imports must come along. Copying a subset makes the
-  // run fail with ERR_MODULE_NOT_FOUND, which from outside is indistinguishable
-  // from the missing-decoder condition this helper exists to create — a test
-  // that "passes" for the wrong reason, or fails for one.
-  for (const layer of ['core', 'surfaces']) {
+export async function isolateModule(root, modulePath, layers) {
+  for (const layer of layers) {
     await cp(path.join(repositoryRoot, layer), path.join(root, layer), { recursive: true });
   }
-  await copyFile(verifierPath, isolatedVerifier);
-  return isolatedVerifier;
+  const segments = modulePath.split('/');
+  const isolated = path.join(root, ...segments);
+  await mkdir(path.dirname(isolated), { recursive: true });
+  await copyFile(path.join(repositoryRoot, ...segments), isolated);
+  return isolated;
+}
+
+/**
+ * The verifier flavour of `isolateModule`: it imports `core/` and `surfaces/`.
+ *
+ * In-process callers should inject `loadDecoder` instead; this exists for
+ * CLI-level tests, where there is deliberately no flag to defeat decoder
+ * discovery.
+ */
+export async function isolateVerifier(root) {
+  return isolateModule(root, 'scripts/verify.mjs', ['core', 'surfaces']);
 }
 
 export function environment(overrides = {}) {
