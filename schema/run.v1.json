@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mohamedzhioua/pixelproof/schema/run.v1.json",
+  "title": "Pixelproof run record v1",
+  "description": "`run.json` — the single source of truth for whether a run is open (ADR 0009 §2), versioned by ADR 0014. Unknown fields are tolerated on read at this major; an unknown major is refused. Every path is relative to the run directory, POSIX-separated, so an archived or remounted run directory stays readable.",
+  "type": "object",
+  "required": ["schema", "runId", "state", "accepted", "createdAt", "updatedAt", "attempts", "outcome", "reasons"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": { "const": "pixelproof.run/1" },
+    "runId": { "$ref": "#/$defs/runId" },
+    "state": { "$ref": "#/$defs/state" },
+    "accepted": {
+      "type": ["boolean", "null"],
+      "description": "A projection of `state`, never an independent field: true only in `accepted`, null in `running`, false everywhere else — which is ADR 0009 §4's explicit `accepted: false` while pending."
+    },
+    "createdAt": { "$ref": "#/$defs/timestamp" },
+    "updatedAt": { "$ref": "#/$defs/timestamp" },
+    "pixelproofVersion": { "type": ["string", "null"] },
+    "command": { "type": ["string", "null"] },
+    "resolved": {
+      "type": "object",
+      "description": "Resolved spec, provider, judge and environment decisions. Its presence is stable; its interior is a diagnostic bag and is not versioned (ADR 0014 §3).",
+      "additionalProperties": true
+    },
+    "attempts": {
+      "type": "array",
+      "description": "Ordered by `number` ascending, starting at 1 and contiguous.",
+      "items": { "$ref": "#/$defs/attemptSummary" }
+    },
+    "outcome": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/outcome" }
+      ],
+      "description": "Null until the run reaches a terminal state."
+    },
+    "reasons": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/reason" },
+      "description": "Named, recorded refusals and outcomes. Codes are stable; the prose is not."
+    },
+    "notes": { "type": "array", "items": { "type": "string" } },
+    "judge": { "description": "Reserved for ADR 0009's handoff record. Not written by this phase." },
+    "rounds": { "description": "Reserved for ADR 0009's escalation rounds. Not written by this phase." },
+    "cache": { "description": "Reserved for ADR 0015. Not written by this phase." }
+  },
+  "$defs": {
+    "runId": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}Z-[0-9a-f]{8}$",
+      "description": "Equals the run directory's basename. The time separator is a hyphen because a colon is not a legal Windows filename character (ADR 0009 §2)."
+    },
+    "state": {
+      "enum": ["running", "pending-judgement", "accepted", "rejected", "abandoned"],
+      "description": "Closed within this major. `accepted`, `rejected` and `abandoned` are terminal: a closed run is never reopened, which is what makes ADR 0009's nonce single-use."
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$",
+      "description": "ISO-8601 UTC. Precision beyond whole seconds may change."
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\\\]+$",
+      "description": "Relative to the run directory, `/`-separated, never absolute and never escaping upward."
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Of the bytes in the run directory after the copy, so the digest describes the file a later reader opens."
+        }
+      },
+      "additionalProperties": true
+    },
+    "verificationSummary": {
+      "type": "object",
+      "required": ["ok", "passed", "failed", "skipped", "strict"],
+      "properties": {
+        "ok": { "type": ["boolean", "null"] },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Carried separately from `passed` forever: a skipped check is not a passed one."
+        },
+        "strict": { "type": "boolean" },
+        "degraded": { "type": "boolean" },
+        "decoder": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "attemptSummary": {
+      "type": "object",
+      "required": ["number", "recordedAt", "artifact", "verification"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "recordedAt": { "$ref": "#/$defs/timestamp" },
+        "artifact": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifact" }
+          ]
+        },
+        "verification": { "$ref": "#/$defs/verificationSummary" },
+        "files": {
+          "type": "object",
+          "properties": { "verification": { "$ref": "#/$defs/relativePath" } },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["state", "reason", "acceptedAttempt", "finalisedAt"],
+      "properties": {
+        "state": { "enum": ["accepted", "rejected", "abandoned"] },
+        "reason": { "type": ["string", "null"] },
+        "acceptedAttempt": { "type": ["integer", "null"], "minimum": 1 },
+        "finalisedAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": true
+    },
+    "reason": {
+      "type": "object",
+      "required": ["code", "at"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": ["string", "null"] },
+        "at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

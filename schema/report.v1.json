@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mohamedzhioua/pixelproof/schema/report.v1.json",
+  "title": "Pixelproof run report v1",
+  "description": "`report.json` — the machine-readable finalisation record for CI (V2-BRIEF §5), versioned by ADR 0014. Written for every terminal state, including abandonment, because a run that ended badly is where evidence is worth most. Derived wholly from `run.json`; the human narrative `report.md` is unversioned prose and must never be parsed. Self-contained rather than $ref-ing run.v1.json so it validates standalone; the shared definitions are held in parity by test/run-schema-parity.test.mjs.",
+  "type": "object",
+  "required": ["schema", "runId", "generatedAt", "state", "accepted", "outcome", "summary", "attempts", "reasons"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": { "const": "pixelproof.report/1" },
+    "runId": { "$ref": "#/$defs/runId" },
+    "generatedAt": { "$ref": "#/$defs/timestamp" },
+    "pixelproofVersion": { "type": ["string", "null"] },
+    "command": { "type": ["string", "null"] },
+    "state": { "$ref": "#/$defs/state" },
+    "accepted": {
+      "type": ["boolean", "null"],
+      "description": "A projection of `state`, carried through from the run record unchanged."
+    },
+    "outcome": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/outcome" }
+      ]
+    },
+    "resolved": { "type": "object", "additionalProperties": true },
+    "summary": { "$ref": "#/$defs/summary" },
+    "decisiveAttempt": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "The attempt the summary describes: the accepted one, or the last recorded."
+    },
+    "attempts": {
+      "type": "array",
+      "description": "Ordered by `number` ascending. Identical to the run record's attempts.",
+      "items": { "$ref": "#/$defs/attemptSummary" }
+    },
+    "reasons": { "type": "array", "items": { "$ref": "#/$defs/reason" } },
+    "notes": { "type": "array", "items": { "type": "string" } },
+    "files": {
+      "type": "object",
+      "properties": {
+        "run": { "$ref": "#/$defs/relativePath" },
+        "report": { "$ref": "#/$defs/relativePath" },
+        "narrative": { "$ref": "#/$defs/relativePath" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "runId": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}Z-[0-9a-f]{8}$"
+    },
+    "state": {
+      "enum": ["running", "pending-judgement", "accepted", "rejected", "abandoned"],
+      "description": "A report only exists for a terminal state, but the field carries the full enum so a consumer switching on it needs one table for both envelopes."
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\\\]+$"
+    },
+    "summary": {
+      "type": "object",
+      "required": ["attempts", "passed", "failed", "skipped"],
+      "properties": {
+        "attempts": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true,
+      "description": "Counts come from the decisive attempt, never summed across attempts: the total failures of four attempts describe no artifact that exists."
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "additionalProperties": true
+    },
+    "verificationSummary": {
+      "type": "object",
+      "required": ["ok", "passed", "failed", "skipped", "strict"],
+      "properties": {
+        "ok": { "type": ["boolean", "null"] },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "strict": { "type": "boolean" },
+        "degraded": { "type": "boolean" },
+        "decoder": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "attemptSummary": {
+      "type": "object",
+      "required": ["number", "recordedAt", "artifact", "verification"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "recordedAt": { "$ref": "#/$defs/timestamp" },
+        "artifact": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/artifact" }
+          ]
+        },
+        "verification": { "$ref": "#/$defs/verificationSummary" },
+        "files": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["state", "reason", "acceptedAttempt", "finalisedAt"],
+      "properties": {
+        "state": { "enum": ["accepted", "rejected", "abandoned"] },
+        "reason": { "type": ["string", "null"] },
+        "acceptedAttempt": { "type": ["integer", "null"], "minimum": 1 },
+        "finalisedAt": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": true
+    },
+    "reason": {
+      "type": "object",
+      "required": ["code", "at"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": ["string", "null"] },
+        "at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": true
+    }
+  }
+}
