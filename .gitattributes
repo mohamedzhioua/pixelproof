@@ -1,0 +1,18 @@
+# Line endings are normalised to LF in the repository *and* in the working tree.
+#
+# This is not cosmetic. `bin/pixelproof.mjs` starts with `#!/usr/bin/env node`,
+# and a shebang followed by CR is not a shebang: the kernel takes the CR as part
+# of the interpreter path and the exec fails with "bad interpreter". Git already
+# stores LF; without `eol=lf` a Windows checkout converts it to CRLF and ships a
+# broken executable — which a Windows working tree cannot notice, because the
+# file it was written with is fine and only a fresh clone shows the difference.
+#
+# Forcing LF on checkout keeps every clone byte-identical to the index, on every
+# platform, so this class of bug cannot come back.
+* text=auto eol=lf
+
+# Binary fixtures must never be line-ending converted.
+*.png binary
+*.webp binary
+*.jpg binary
+*.ico binary
