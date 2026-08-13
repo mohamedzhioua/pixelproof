@@ -7,6 +7,13 @@ import path from 'node:path';
 const DEFAULT_TIMEOUT_MS = 300_000;
 const OUTPUT_TAIL_LENGTH = 4_000;
 
+// gpt-image-2's accepted output geometry. These are vendor facts, so they live
+// with the vendor rather than in core or in the CLI (ADR 0002).
+const CODEX_MAX_EDGE = 3840;
+const CODEX_MIN_PIXELS = 655_360;
+const CODEX_MAX_PIXELS = 8_294_400;
+const CODEX_MAX_ASPECT_RATIO = 3;
+
 function positiveInteger(value, label) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
@@ -26,6 +33,52 @@ function tail(value) {
   return value.length <= OUTPUT_TAIL_LENGTH
     ? value
     : value.slice(value.length - OUTPUT_TAIL_LENGTH);
+}
+
+/**
+ * Reject a requested size the provider cannot honour before spending a call on
+ * it. Every violation is reported at once: fixing one edge only to be told
+ * about the other is a needless round trip.
+ */
+export function assertCodexSize(size) {
+  const totalPixels = size.width * size.height;
+  const longToShortRatio = Math.max(size.width, size.height) / Math.min(size.width, size.height);
+  const violations = [];
+
+  if (totalPixels < CODEX_MIN_PIXELS) {
+    violations.push(
+      `total pixel count ${totalPixels} is below the minimum total pixel count ${CODEX_MIN_PIXELS}`,
+    );
+  }
+  if (totalPixels > CODEX_MAX_PIXELS) {
+    violations.push(
+      `total pixel count ${totalPixels} exceeds the maximum total pixel count ${CODEX_MAX_PIXELS}`,
+    );
+  }
+  if (size.width > CODEX_MAX_EDGE) {
+    violations.push(`width ${size.width} exceeds the maximum edge length ${CODEX_MAX_EDGE}`);
+  }
+  if (size.height > CODEX_MAX_EDGE) {
+    violations.push(`height ${size.height} exceeds the maximum edge length ${CODEX_MAX_EDGE}`);
+  }
+  if (size.width % 16 !== 0) {
+    violations.push(`width ${size.width} is not a multiple of 16`);
+  }
+  if (size.height % 16 !== 0) {
+    violations.push(`height ${size.height} is not a multiple of 16`);
+  }
+  if (longToShortRatio > CODEX_MAX_ASPECT_RATIO) {
+    violations.push(
+      `long-to-short ratio ${longToShortRatio.toFixed(4)} exceeds the maximum 3:1 ratio`,
+    );
+  }
+
+  if (violations.length > 0) {
+    throw new Error(
+      `--size ${size.width}x${size.height} cannot be honoured by gpt-image-2: `
+        + violations.join('; '),
+    );
+  }
 }
 
 function composePrompt({ prompt, width, height, targetFilename }) {
