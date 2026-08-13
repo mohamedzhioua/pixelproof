@@ -1,3 +1,4 @@
 node_modules/
 *.log
+.ai-os/
 .pixelproof-scratch/

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { access, copyFile, mkdir, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rename, stat, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -136,11 +136,10 @@ function terminateChild(child) {
   }
 }
 
-function runCodex({ args, cwd, timeoutMs }) {
+function runCodex({ args, cwd, timeoutMs, startedAt }) {
   const invocation = codexInvocation(args);
 
   return new Promise((resolve, reject) => {
-    const startedAt = Date.now();
     const child = spawn(invocation.command, invocation.args, {
       cwd,
       env: invocation.env,
@@ -206,12 +205,19 @@ function runCodex({ args, cwd, timeoutMs }) {
   });
 }
 
-async function fileExists(filePath) {
+async function generatedFileStatus(filePath, notBefore) {
   try {
-    await access(filePath);
-    return true;
+    const fileStats = await stat(filePath);
+    // Existence alone can predate this run; mtime at or after run start is the production proof.
+    return {
+      exists: true,
+      fresh: fileStats.mtimeMs >= notBefore,
+      mtimeMs: fileStats.mtimeMs,
+    };
   } catch (error) {
-    if (error?.code === 'ENOENT') return false;
+    if (error?.code === 'ENOENT') {
+      return { exists: false, fresh: false, mtimeMs: null };
+    }
     throw error;
   }
 }
@@ -243,15 +249,9 @@ async function newestGeneratedPng(notBefore) {
       if (entry.isDirectory()) {
         directories.push(filePath);
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.png')) {
-        let fileStats;
-        try {
-          fileStats = await stat(filePath);
-        } catch (error) {
-          if (error?.code === 'ENOENT') continue;
-          throw error;
-        }
-        if (fileStats.mtimeMs >= notBefore) {
-          candidates.push({ filePath, modified: fileStats.mtimeMs });
+        const fileStatus = await generatedFileStatus(filePath, notBefore);
+        if (fileStatus.fresh) {
+          candidates.push({ filePath, modified: fileStatus.mtimeMs });
         }
       }
     }
@@ -271,11 +271,16 @@ async function moveFile(source, destination) {
   }
 }
 
-function failureMessage(result, targetPath) {
+function failureMessage(result, targetPath, staleTarget) {
   const reason = result.timedOut
     ? 'Codex timed out'
     : `Codex exited with code ${result.code}${result.signal ? ` (${result.signal})` : ''}`;
-  return `${reason}; no image was produced at ${targetPath}, and no post-run image was found under ${generatedImagesDirectory()} either.
+  const targetFailure = staleTarget
+    ? `a pre-existing file was found at ${targetPath} but rejected as stale because its mtime `
+      + `"${new Date(staleTarget.mtimeMs).toISOString()}" predates the run start time `
+      + `"${new Date(result.startedAt).toISOString()}"; the pre-existing file was left unchanged`
+    : `no image was produced at ${targetPath}`;
+  return `${reason}; ${targetFailure}, and no post-run image was found under ${generatedImagesDirectory()} either.
 
 stdout tail:
 ${result.stdout || '(empty)'}
@@ -304,27 +309,32 @@ export async function generateWithCodex({ prompt, outPath, width, height }) {
     height: desiredHeight,
     targetFilename,
   });
+  const startedAt = Date.now();
   const result = await runCodex({
     args: buildCodexArgs(generationPrompt),
     cwd: outputDirectory,
     timeoutMs: timeoutFromEnvironment(),
+    startedAt,
   });
 
-  if (!(await fileExists(targetPath))) {
+  let targetStatus = await generatedFileStatus(targetPath, result.startedAt);
+  const staleTarget = targetStatus.exists && !targetStatus.fresh ? targetStatus : null;
+  if (!targetStatus.fresh) {
     const fallback = await newestGeneratedPng(result.startedAt);
     if (fallback) {
       await moveFile(fallback, targetPath);
       console.warn(
         `Recovered image from the Codex session directory (${fallback}) and moved it to ${targetPath}.`,
       );
+      targetStatus = await generatedFileStatus(targetPath, result.startedAt);
     }
   }
 
-  if (!(await fileExists(targetPath))) {
-    throw new Error(failureMessage(result, targetPath));
+  if (!targetStatus.fresh) {
+    throw new Error(failureMessage(result, targetPath, staleTarget));
   }
   if (result.timedOut) {
-    throw new Error(`Codex timed out after producing ${targetPath}; inspect the file before using it.`);
+    throw new Error(`Codex timed out, but a fresh image exists at ${targetPath}; inspect it before use.`);
   }
   if (result.code !== 0) {
     throw new Error(

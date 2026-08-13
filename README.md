@@ -179,7 +179,7 @@ Windows, a run normally takes about one minute; that runtime is expected and is 
 
 There are no required npm dependencies and no API key is needed.
 
-## Limitations
+## Known limitations
 
 Claude has no image-generation model. It can author SVG and visually review image files, but
 raster generation in Pixelproof is Codex's built-in image generation, not Claude's. Image
@@ -187,3 +187,8 @@ models are nondeterministic: retries can fix one defect while introducing anothe
 colours are not guaranteed, and the bounded loop can finish without a fully passing attempt.
 Without `sharp`, colour and alpha checks and SVG-to-PNG rasterisation are unavailable; the CLI
 degrades explicitly rather than pretending those checks ran.
+
+Session-directory recovery scans all PNGs under `$CODEX_HOME/generated_images/` that were
+created after the run began. Codex output is unstructured and retained only as a bounded tail,
+so Pixelproof cannot reliably identify the current session directory; parallel runs sharing a
+`CODEX_HOME` can therefore recover each other's images.
