@@ -73,8 +73,9 @@ codex exec --sandbox workspace-write --skip-git-repo-check "<prompt>"
 The child process has closed stdin, runs in the output directory, receives exact dimensions
 and filename in its prompt, and is limited to that one output. If Codex instead writes to its
 default `$CODEX_HOME/generated_images/<session-uuid>/exec-<uuid>.png` layout, Pixelproof
-recovers the newest PNG created after the run began and moves it into the requested location.
-Older images are never adopted as fallback output. The default timeout is 300 seconds.
+recovers the single PNG created after the run began and moves it into the requested location.
+Older images are never adopted as fallback output, and if more than one post-start image is
+found the run fails as ambiguous rather than picking one. The default timeout is 300 seconds.
 
 Optional environment variables:
 
@@ -223,5 +224,10 @@ degrades explicitly rather than pretending those checks ran.
 
 Session-directory recovery scans all PNGs under `$CODEX_HOME/generated_images/` that were
 created after the run began. Codex output is unstructured and retained only as a bounded tail,
-so Pixelproof cannot reliably identify the current session directory; parallel runs sharing a
-`CODEX_HOME` can therefore recover each other's images.
+so Pixelproof cannot reliably identify the current session directory. When that scan finds more
+than one post-start image, the run cannot prove which is its own and fails with an
+`Ambiguous image recovery` error naming every candidate; no file is moved or deleted. This
+prevents parallel runs sharing a `CODEX_HOME` from recovering each other's images — it does not
+make them work. Two runs in flight against one `CODEX_HOME` will both fail whenever they fall
+back to recovery, which is the intended trade: a failure is retryable, a wrongly adopted image
+that has passed verification is not detectable at all. Run them sequentially.

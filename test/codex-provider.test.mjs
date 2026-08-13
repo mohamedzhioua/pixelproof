@@ -182,6 +182,45 @@ test('recovers the newest post-run PNG recursively and logs the recovery', async
   });
 });
 
+test('refuses to guess when the session directory holds more than one fresh image', async () => {
+  // One session writing two images stands in for two runs sharing a CODEX_HOME:
+  // the adapter sees the same thing either way — several post-start PNGs and no
+  // way to tell which is its own — and this needs no cross-process coordination
+  // to be deterministic. The concurrent-process form is in the compat suite.
+  const fakeCodex = `
+    import { mkdir, writeFile } from 'node:fs/promises';
+    import path from 'node:path';
+    const generated = path.join(process.env.CODEX_HOME, 'generated_images');
+    for (const session of ['session-a', 'session-b']) {
+      await mkdir(path.join(generated, session), { recursive: true });
+      await writeFile(path.join(generated, session, 'exec-' + session + '.png'), session);
+    }
+  `;
+
+  await withFakeCodex(fakeCodex, async ({ root, codexHome }) => {
+    const outputPath = path.join(root, 'output', 'result.png');
+
+    await assert.rejects(
+      generateWithCodex({ prompt: 'test', outPath: outputPath, width: 1, height: 1 }),
+      (error) => {
+        assert.match(error.message, /^Ambiguous image recovery: 2 images under /);
+        assert.ok(error.message.includes(path.join(codexHome, 'generated_images')));
+        assert.ok(error.message.includes(path.join('session-a', 'exec-session-a.png')));
+        assert.ok(error.message.includes(path.join('session-b', 'exec-session-b.png')));
+        assert.match(error.message, /No file was moved, adopted, or deleted/);
+        return true;
+      },
+    );
+
+    // Refusal leaves everything where it was: no target, no consumed candidate.
+    await assert.rejects(stat(outputPath), { code: 'ENOENT' });
+    for (const session of ['session-a', 'session-b']) {
+      const candidate = path.join(codexHome, 'generated_images', session, `exec-${session}.png`);
+      assert.equal(await readFile(candidate, 'utf8'), session);
+    }
+  });
+});
+
 test('rejects stale fallback images when Codex produces nothing', async () => {
   await withFakeCodex('', async ({ root, codexHome }) => {
     const staleDirectory = path.join(codexHome, 'generated_images', 'stale-session');
