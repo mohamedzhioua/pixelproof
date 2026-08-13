@@ -22,8 +22,9 @@
  *    `unknown` is preferred over a confident guess in every case where proving
  *    it would cost a call.
  * 3. **Bounded.** Every probe — module load, detect, decoder import, auth — runs
- *    under a timeout whose timer is unref'd. A wedged CLI or a hung import turns
- *    into a reported line, never a hung command.
+ *    under a timeout, and the losing side is abandoned and cleared rather than
+ *    awaited. A wedged CLI or a hung import turns into a reported line, never a
+ *    hung command and never a silent one.
  *
  * The exit code answers one question: can this environment run at all? Zero
  * when at least one provider is available, one when nothing can run. Missing
@@ -159,15 +160,24 @@ function messageOf(error) {
 }
 
 /**
- * Race a promise against an unref'd timer. The losing promise is abandoned
- * rather than cancelled — nothing here can be cancelled — but because the timer
- * does not hold the loop open, an abandoned probe cannot keep `doctor` alive.
+ * Race a promise against a timer. The losing promise is abandoned rather than
+ * cancelled — nothing here can be cancelled — and the `clearTimeout` below is
+ * what stops an abandoned probe from keeping `doctor` alive.
+ *
+ * The timer is deliberately **not** `unref`'d. When a probe never settles this
+ * timer is the only thing that will ever resolve the race, and an unref'd timer
+ * does not hold the event loop open: Node drains and exits before it fires, so
+ * `doctor` prints nothing at all against exactly the hung probe it exists to
+ * survive. `clearTimeout` already guarantees the timer cannot delay exit once
+ * the race settles, so `unref` bought nothing and cost the timeout itself.
+ *
+ * Node 24 hides this; Node 22 reports "Promise resolution is still pending but
+ * the event loop has already resolved".
  */
 function withTimeout(value, timeoutMs) {
   let timer = null;
   const expiry = new Promise((resolve) => {
     timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
-    if (typeof timer?.unref === 'function') timer.unref();
   });
   return Promise.race([Promise.resolve(value), expiry]).finally(() => {
     if (timer !== null) clearTimeout(timer);
