@@ -61,11 +61,13 @@ import { parseArguments } from '../parse.mjs';
 export const DOCTOR_USAGE = `pixelproof environment report
 
 Usage:
-  pixelproof doctor [--json] [--timeout <ms>]
+  pixelproof doctor [--json] [--timeout <ms>] [--run-dir <path>]
 
 Options:
   --json              Print a machine-readable report
   --timeout <ms>      Budget for each probe (default 3000)
+  --run-dir <path>    Run root to scan for pending judgements; also
+                      PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help          Show this help
 
 doctor is read-only: it detects installed tools, never invokes a provider to
@@ -205,14 +207,22 @@ const DOCTOR_FLAGS = new Map([
   ['--help', 'help'],
 ]);
 
-const DOCTOR_VALUED = new Set(['--timeout']);
+const DOCTOR_VALUED = new Set(['--timeout', '--run-dir']);
 
-/** Parse doctor arguments. Throws on an unknown argument or a bad value. */
+/**
+ * Parse doctor arguments. Throws on an unknown argument or a bad value.
+ *
+ * `camelCase` is on for `--run-dir`. Every other doctor flag is a single word,
+ * so nothing existing is renamed — and `doctor` accepting a run root under a
+ * different key from `generate`, `verify` and `judge` would be the two-dialects
+ * problem ADR 0003 forbids, in miniature.
+ */
 export function parseDoctorArguments(argv) {
   const options = parseArguments(argv, {
     flags: DOCTOR_FLAGS,
     valued: DOCTOR_VALUED,
     defaults: { json: false, help: false },
+    camelCase: true,
   });
 
   if (options.timeout !== undefined) {
@@ -449,11 +459,15 @@ async function collectPending({ probe, timeoutMs }) {
  * Assemble the whole report as data. Rendering is a separate step so `--json`
  * and the human report cannot disagree about what was found.
  */
-export async function collectReport({ probes = undefined, timeoutMs = DEFAULT_PROBE_TIMEOUT_MS } = {}) {
+export async function collectReport({
+  probes = undefined,
+  timeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
+  runDir = null,
+} = {}) {
   const providerProbe = probes?.providers ?? (() => defaultProviderProbe(timeoutMs));
   const decoderProbe = probes?.decoder ?? loadSharpDecoder;
   const authProbe = probes?.auth ?? defaultAuthProbe;
-  const pendingProbe = probes?.pending ?? (() => listPendingRuns());
+  const pendingProbe = probes?.pending ?? (() => listPendingRuns({ runDir }));
 
   const providers = await collectProviders({ probe: providerProbe, authProbe, timeoutMs });
   const decoder = await collectDecoder({ probe: decoderProbe, timeoutMs });
@@ -615,7 +629,7 @@ export async function doctorCommand({ argv = [], probes = undefined } = {}) {
   }
 
   const timeoutMs = options.timeout ?? probes?.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
-  const report = await collectReport({ probes, timeoutMs });
+  const report = await collectReport({ probes, timeoutMs, runDir: options.runDir ?? null });
 
   if (options.json) {
     output.log(JSON.stringify(report, null, 2));

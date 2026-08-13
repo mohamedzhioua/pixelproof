@@ -85,7 +85,7 @@ Options:
 
 Run \`pixelproof <command> --help\` for a command's options. \`generate\`, \`verify\`
 and \`doctor\` are identical to the legacy \`node scripts/<command>.mjs\` entry
-points; their banners are frozen, so the two options below are documented here.
+points.
 
 Host judgement (ADR 0009):
   --judge host              Ask the calling agent to judge the spec's "semantic"
@@ -94,7 +94,7 @@ Host judgement (ADR 0009):
   --run-dir <path>          Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
 
 With \`--judge host\` the artifact is written into the run directory and appears
-at \`--out\` only once the run is accepted. The command exits **2**, which means an
+at \`--out\` only once the run is accepted. The command exits 2, which means an
 outstanding judgement and is never a pass. Answer it with \`pixelproof judge\`.
 `;
 }

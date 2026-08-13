@@ -450,7 +450,63 @@ test('--judge refuses what it cannot honestly judge, before doing any work', asy
   }
 });
 
-test('without --judge nothing changes: no run directory, and the v1 banners are frozen', async () => {
+/**
+ * Every line the v1 banners carried before ADR 0003's 2026-08-13 amendment,
+ * in order, blank lines omitted.
+ *
+ * The amendment permits *additive* lines only: existing lines may be separated
+ * by new ones, but none may be reworded, reordered or dropped. The compat tests
+ * hold each whole banner byte for byte, which catches a change — but it catches
+ * it identically whether the change was an addition or a silent rewording of an
+ * old line, and the fix for a failing byte comparison is to paste in the new
+ * output. This list is what makes that shortcut fail: paste in a banner with a
+ * reworded historical line and the subsequence check below still refuses it.
+ */
+const PRE_AMENDMENT_LINES = {
+  verify: [
+    'pixelproof mechanical verifier',
+    'Usage:',
+    '  node scripts/verify.mjs --file <path> [--spec <spec.json>] [--json] [--strict]',
+    'Options:',
+    '  --file <path>       Image to inspect (required)',
+    '  --spec <path>       JSON spec containing a mechanical block',
+    '  --json              Print a machine-readable result object',
+    '  --strict            Treat skipped checks as failures',
+    '  -h, --help          Show this help',
+  ],
+  generate: [
+    'pixelproof image generator',
+    'Usage:',
+    '  node scripts/generate.mjs --prompt "<text>" --out <path> [options]',
+    'Options:',
+    '  --prompt <text>          Raster generation prompt (required for Codex)',
+    '  --out <path>             Target .png or .svg path (required)',
+    '  --provider codex|svg     Override provider selection',
+    '  --size <WxH>             Desired pixels; verified when --spec is absent',
+    '  --spec <file>            Fold a JSON spec into the prompt and verify it; spec dimensions win',
+    '  --svg-file <path>        SVG source for the svg provider; otherwise read stdin',
+    '  -h, --help               Show this help',
+    'Size verification:',
+    '  --size without --spec creates a width/height mechanical spec and affects the exit code.',
+    '  Codex sizes must have edges divisible by 16, each edge <= 3840, an aspect ratio <= 3:1,',
+    '  and a total pixel count from 655360 through 8294400.',
+    'Provider selection:',
+    '  --provider, then PIXELPROOF_PROVIDER, then .svg output, then Codex on PATH.',
+  ],
+};
+
+/** Which of `wanted` is missing from `lines`, or out of order. */
+function firstOutOfOrder(lines, wanted) {
+  let cursor = 0;
+  for (const line of wanted) {
+    const found = lines.indexOf(line, cursor);
+    if (found === -1) return line;
+    cursor = found + 1;
+  }
+  return null;
+}
+
+test('without --judge nothing changes: no run directory, and the v1 banners only grew', async () => {
   const ws = await workspace('pixelproof-judge-cli-untouched-');
   try {
     // Run from a scratch working directory, so "no run root was created" is a
@@ -462,20 +518,34 @@ test('without --judge nothing changes: no run directory, and the v1 banners are 
     assert.equal(await exists(path.join(ws.root, '.pixelproof')), false,
       'a run without --judge must not create a run root');
 
-    // ADR 0003 freezes the v1 prose, and ADR 0009 promises byte-identical
-    // behaviour without --judge — `--help` included. The new options are
-    // accepted but documented on new surface instead.
+    // ADR 0003 as amended on 2026-08-13: a banner may gain lines documenting a
+    // new flag, and may not lose or reword the ones it had.
     for (const [command, usage] of [['verify', VERIFY_USAGE], ['generate', GENERATE_USAGE]]) {
       const help = pixelproof([command, '--help']);
       assert.equal(help.status, 0);
       assert.equal(help.stdout, `${usage}\n`);
-      assert.equal(/--judge/.test(usage), false, `${command}'s frozen banner must not grow a flag`);
+
+      const lines = usage.split('\n').map((line) => line.trimEnd()).filter((line) => line !== '');
+      const lost = firstOutOfOrder(lines, PRE_AMENDMENT_LINES[command]);
+      assert.equal(lost, null,
+        `${command}'s banner reworded, reordered or dropped a pre-amendment line: ${JSON.stringify(lost)}`);
+
+      // The point of the amendment: the flags are findable by the only route a
+      // user would try.
+      for (const flag of ['--judge host', '--judge-deadline', '--run-dir']) {
+        assert.ok(lines.some((line) => line.trimStart().startsWith(flag)),
+          `${command} --help must list ${flag} in its options`);
+      }
+      // Matched across a line wrap: verify's banner is narrower than
+      // generate's, so the sentence breaks in a different place.
+      assert.match(usage, /exits 2: an outstanding judgement/);
+      assert.match(usage, /never a\s+pass\./);
     }
 
-    // ... and the top-level banner, which is new surface, is where they live.
+    // The top-level banner carries them too, since it is where a reader who has
+    // not yet picked a command looks.
     const top = pixelproof(['--help']);
     assert.match(top.stdout, /--judge host/);
-    assert.match(top.stdout, /exits \*\*2\*\*|exits 2/);
     assert.match(top.stdout, /^ {2}judge {2,}List, show, answer or close/m);
   } finally {
     await removeTemporaryDirectory(ws.root);
@@ -483,6 +553,36 @@ test('without --judge nothing changes: no run directory, and the v1 banners are 
 });
 
 // --- doctor ---------------------------------------------------------------
+
+test('doctor --run-dir scans the run root it was given, not the default one', async () => {
+  const ws = await workspace('pixelproof-judge-cli-doctor-root-');
+  try {
+    assert.equal(pixelproof([
+      'verify', '--file', ws.image, '--spec', ws.specPath,
+      '--judge', 'host', '--run-dir', ws.runRoot,
+    ]).status, 2);
+
+    // The real scan, not the probe seam: this is what a user whose runs live
+    // outside the working directory actually runs. Executed from a scratch cwd
+    // so the default root is empty and cannot supply the answer by accident.
+    const pointed = pixelproof(['doctor', '--run-dir', ws.runRoot], { cwd: ws.root });
+    assert.match(pointed.stdout, /judgements: {2,}1 pending host judgement \(0 expired\)/);
+
+    const unpointed = pixelproof(['doctor'], { cwd: ws.root });
+    assert.match(unpointed.stdout, /judgements: {2,}none pending/,
+      'without --run-dir the default root is scanned, and it is empty here');
+
+    // PIXELPROOF_RUN_ROOT reaches the same place, so the flag and the variable
+    // do not disagree about where evidence lives.
+    const viaEnvironment = pixelproof(['doctor'], {
+      cwd: ws.root,
+      env: { ...process.env, PIXELPROOF_RUN_ROOT: ws.runRoot },
+    });
+    assert.match(viaEnvironment.stdout, /judgements: {2,}1 pending host judgement/);
+  } finally {
+    await removeTemporaryDirectory(ws.root);
+  }
+});
 
 test('doctor reports outstanding judgements, and says when it could not look', async () => {
   const probes = (pending) => ({

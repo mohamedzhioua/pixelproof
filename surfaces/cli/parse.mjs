@@ -27,7 +27,16 @@ Options:
   --spec <path>       JSON spec containing a mechanical block
   --json              Print a machine-readable result object
   --strict            Treat skipped checks as failures
+  --judge host        Ask the calling agent to judge the spec's semantic assertions
+  --judge-deadline    How long the checklist stays answerable (default 24h)
+  --run-dir <path>    Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help          Show this help
+
+Host judgement:
+  --judge host writes a checklist and exits 2: an outstanding judgement, never a
+  pass. Answer it with \`pixelproof judge submit\`. Needs a .png and a spec with at
+  least one "semantic" entry. --judge-deadline takes a duration such as 6h or 90m;
+  a unit is required, because a bare number could be seconds or milliseconds.
 `;
 
 export const GENERATE_USAGE = `pixelproof image generator
@@ -42,6 +51,9 @@ Options:
   --size <WxH>             Desired pixels; verified when --spec is absent
   --spec <file>            Fold a JSON spec into the prompt and verify it; spec dimensions win
   --svg-file <path>        SVG source for the svg provider; otherwise read stdin
+  --judge host             Ask the calling agent to judge the spec's semantic assertions
+  --judge-deadline <dur>   How long the checklist stays answerable (default 24h)
+  --run-dir <path>         Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help               Show this help
 
 Size verification:
@@ -51,6 +63,14 @@ Size verification:
 
 Provider selection:
   --provider, then PIXELPROOF_PROVIDER, then .svg output, then Codex on PATH.
+
+Host judgement:
+  --judge host writes a checklist and exits 2: an outstanding judgement, never a pass.
+  The artifact is written into the run directory and appears at --out only once the run
+  is accepted, so a rejected or abandoned run leaves no file there. Answer it with
+  \`pixelproof judge submit\`. Needs a .png target and a spec with at least one "semantic"
+  entry. --judge-deadline takes a duration such as 6h or 90m; a unit is required, because
+  a bare number could be seconds or milliseconds.
 `;
 
 /**
@@ -104,19 +124,20 @@ const VERIFY_FLAGS = new Map([
 ]);
 
 /**
- * ADR 0009's options are accepted by both commands but appear in **neither
- * banner**, and that is deliberate rather than an oversight.
+ * ADR 0009's options, accepted by both commands and listed in both banners.
  *
- * ADR 0003 freezes the v1 prose: "human-readable prose may change only where it
- * reports a newly detected safety failure", and ADR 0009 promises that without
- * `--judge` the behaviour is byte-identical to today — `--help` included. The
- * banners still say `node scripts/verify.mjs` for the same reason: these
- * commands are synonyms for the legacy scripts, not a new dialect.
+ * They are in the banners under the **2026-08-13 amendment to ADR 0003**, which
+ * permits purely additive lines documenting a new flag while every existing line
+ * stays byte-identical. The reasoning is in ADR 0003: the freeze exists to
+ * prevent behavioural drift, and a help line adds no behaviour, whereas a flag
+ * whose own command's help does not mention it is undiscoverable by the only
+ * route a user would try.
  *
- * `--judge` is documented on new surface instead: `pixelproof judge --help`, the
- * top-level banner, `pixelproof doctor`, and the README. Listing it here as well
- * needs an amendment to ADR 0003, which is the maintainer's call and not this
- * slice's to take.
+ * What the amendment does **not** relax, and what the compatibility tests still
+ * hold byte for byte: no existing line may change, and no exit code, JSON field
+ * or documented semantic may move. The banners still say `node
+ * scripts/verify.mjs`, because these commands remain synonyms for the legacy
+ * scripts rather than a new dialect.
  */
 const JUDGE_VALUED = Object.freeze(['--judge', '--judge-deadline', '--run-dir']);
 

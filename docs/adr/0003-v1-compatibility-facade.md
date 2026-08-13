@@ -16,9 +16,40 @@ prose may change only where it reports a newly detected safety failure. Legacy
 `scripts/generate.mjs` and `scripts/verify.mjs` will become in-process shims over the new entry
 point, never independent forks.
 
+## Amendment — additive help lines (2026-08-13)
+
+The original decision froze human-readable prose except where it reports a newly detected safety
+failure. Applied literally to `--help`, that made a new flag undiscoverable by the only route a
+user would try: [ADR 0009](./0009-host-judge-handoff.md) added `--judge`, `--judge-deadline` and
+`--run-dir` to `generate` and `verify`, and the first implementation left all three out of both
+banners to keep the freeze.
+
+**The freeze now permits purely additive lines documenting a new flag in a v1 banner**, provided
+every existing line stays byte-identical.
+
+The reasoning is that ADR 0003 exists to prevent *behavioural* drift, and a help line adds no
+behaviour. A flag whose own command's help does not mention it is a worse defect than help text
+growing — it is a feature that only a reader of the source or the README can find.
+
+What the amendment does **not** relax:
+
+- No existing line may change. Lines may be inserted between them; none may be reworded, and the
+  `Usage:` synopsis stays as it is.
+- No exit code, JSON field name, flag name, or documented semantic may move. Those are the freeze
+  in the form that matters.
+- The characterization tests remain the contract. When a banner grows a line, the expected banner
+  in `test/verify-cli.compat.test.mjs` and `test/generate-cli.compat.test.mjs` is updated
+  **deliberately** — it is the evidence, so it is edited with intent and never deleted or
+  loosened into a substring match.
+
+Maintainer confirmation: the maintainer made this call on 2026-08-13.
+
 ## Consequences
 
 Characterization tests are the compatibility contract for later movement. Safety tightening must
 be explicit and may add or clarify only the diagnostic prose needed to explain the new rejection.
+
+A banner is now an append-only document within a major: it can gain lines but cannot lose or
+reword them, so its growth is bounded by how many flags a command accumulates.
 
 Maintainer confirmation: the maintainer made this call on 2026-08-13.

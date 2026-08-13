@@ -151,9 +151,14 @@ providers are installed, each one's declared limits, and — the part that cause
 confusion — **which mechanical checks will run and which will `SKIP`**.
 
 ```sh
-pixelproof doctor            # human report
-pixelproof doctor --json     # the same document, machine-readable
+pixelproof doctor                        # human report
+pixelproof doctor --json                 # the same document, machine-readable
+pixelproof doctor --run-dir ci/evidence  # scan a run root that is not the working directory's
 ```
+
+It also reports outstanding host judgements — `N pending host judgements (M expired)` — so a
+handoff left unanswered by a crashed agent is visible to someone who never knew one happened. A
+scan it could not perform says so rather than reporting none.
 
 It is read-only and never spends quota. It will not invoke a provider to generate anything,
 and it deliberately does not probe authentication, because that means a network call that can

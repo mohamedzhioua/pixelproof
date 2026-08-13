@@ -45,22 +45,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rather than reporting none.
 - `schema/judge-pending.v1.json` and `schema/judge-result.v1.json`, the two envelopes a
   consumer outside this repository reads and writes.
+- `pixelproof doctor --run-dir <path>`, so the pending-judgement line can scan a run root that
+  is not the working directory's. `doctor` already honoured `PIXELPROOF_RUN_ROOT`; accepting the
+  flag under a different name from `generate`, `verify` and `judge` — or not at all — would have
+  been the two-dialects problem in miniature.
 
 ### Changed
 
+- **ADR 0003 is amended** (2026-08-13): the v1 prose freeze now permits *purely additive* lines
+  documenting a new flag in a banner, provided every existing line stays byte-identical. The
+  freeze exists to prevent behavioural drift and a help line adds no behaviour, whereas a flag
+  whose own command's help does not mention it is undiscoverable by the only route a user would
+  try. No existing line may change, and no exit code, JSON field or documented semantic may move.
+- `generate --help` and `verify --help` accordingly list `--judge host`, `--judge-deadline` and
+  `--run-dir`, and gain a `Host judgement:` section naming exit 2 and the promotion rule. The
+  characterization tests were updated deliberately to the new expected banners — they are the
+  evidence — and a new check holds every pre-amendment line present, unchanged and in order, so
+  pasting in a banner with a silently reworded old line still fails.
 - `skills/image/SKILL.md` step 6 is host-neutral: it said "use Claude Code's Read tool", and
   now says to open the artifact with whatever image-reading capability the host has, with the
   two-step `--judge host` flow documented alongside. The same instruction serves the Codex and
   Gemini bundles.
-- `pixelproof verify` now camel-cases dashed option keys, as `generate` already did. Every v1
-  verifier flag is a single word, so nothing existing is renamed.
+- `pixelproof verify` and `pixelproof doctor` now camel-case dashed option keys, as `generate`
+  already did. Every pre-existing flag on both is a single word, so nothing is renamed.
 
 ### Unchanged
 
-- Without `--judge`, behaviour is byte-identical: same flags, output, exit codes, and no run
-  directory is created. The frozen v1 banners do not grow a flag (ADR 0003 permits prose
-  changes only to report a new safety failure), so `--judge` is documented on new surface —
-  the top-level banner, `pixelproof judge --help`, `doctor`, and the README.
+- Without `--judge`, behaviour is byte-identical: same flags, same output, same exit codes, and
+  no run directory is created. `--help` gained lines and lost none.
 
 ## [0.2.1] - 2026-08-13
 

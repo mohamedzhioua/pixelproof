@@ -67,39 +67,40 @@ check would reject every otherwise-correct image forever.
    still rejected. Exit 1, not 2.
 3. **`--judge host` requires a `.png` target and a spec with at least one `semantic` entry**,
    both refused before a provider is invoked. Degrading a vector target to `SKIP` would report
-   an unverified image as verified, and ADR 0019 has not been re-decided yet (§5 below).
+   an unverified image as verified, and ADR 0019 has not been re-decided yet (§4.4 below).
 
 ## 4. Open decisions — maintainer's, not yours to take silently
 
-1. **The v1 banners do not mention `--judge`.** ADR 0003 freezes v1 prose ("may change only
-   where it reports a newly detected safety failure") and ADR 0009 promises byte-identical
-   behaviour without `--judge`, `--help` included. So `generate --help` and `verify --help` are
-   unchanged and a test asserts they stay that way. `--judge` is documented on new surface
-   instead: the top-level banner, `pixelproof judge --help`, `doctor`, and the README. Listing it
-   in the frozen banners needs an amendment to ADR 0003. **This is the most likely thing a user
-   will trip over.**
-2. **ADR 0013 should probably be split.** Its colour-science half is implemented and validated
+1. **ADR 0013 should probably be split.** Its colour-science half is implemented and validated
    against all 34 Sharma/Wu/Dalal reference pairs; its pHash corpus, ICC handling and
    alpha-compositing background are genuinely unresolved. One document means the validated half
    stays `Deferred` over an unrelated question. Status deliberately left alone.
-3. **The duplicate threshold needs real generated output.** `findDuplicates` throws without an
+2. **The duplicate threshold needs real generated output.** `findDuplicates` throws without an
    explicit `maxDistance`, on purpose. `docs/evidence/heuristic-calibration.md` records what a
    maintainer could defensibly start from.
-4. **A single foreign recovery candidate is still adopted** (ADR 0008). Timestamps cannot prove
+3. **A single foreign recovery candidate is still adopted** (ADR 0008). Timestamps cannot prove
    whose an image is. Note that ADR 0009 *did* close the equivalent hole for the handoff, and the
    answer was the same shape: positive identity (a nonce), not a stricter reading of the same
    evidence. Closing 0008 needs a run-owned output location or a session id Codex reports back.
    Isolating `CODEX_HOME` per run does **not** work: Codex keeps credentials there.
-5. **Degraded SVG semantics** (ADR 0019) must be decided again when the contract path becomes the
+4. **Degraded SVG semantics** (ADR 0019) must be decided again when the contract path becomes the
    CLI's engine. `--judge host` currently refuses a non-PNG target rather than pre-empting it.
+
+**Settled on 2026-08-13, do not re-litigate:** ADR 0003 was amended to permit purely additive
+help lines, so `generate --help` and `verify --help` now list `--judge`, `--judge-deadline` and
+`--run-dir`. The freeze survives in the form that matters — no existing line may change, and no
+exit code, JSON field or documented semantic may move. `test/judge-cli.test.mjs` holds every
+pre-amendment banner line present, unchanged and in order, so the usual fix for a failing byte
+comparison (paste in the new output) still fails if an old line was reworded on the way.
 
 ## 5. What is worth doing next
 
 In rough order of value:
 
-1. **Retakes under a judged run.** The run directory and `attempts[]` already model several
-   attempts; nothing yet produces a second one. This is the missing half of the loop the image
-   skill describes in prose.
+1. **Retakes under a judged run** — confirmed by the maintainer on 2026-08-13 as the next slice,
+   with its own thinking rather than a tail-end addition. The run directory and `attempts[]`
+   already model several attempts; nothing yet produces a second one. This is the missing half
+   of the loop the image skill describes in prose.
 2. **The judge registry and `--judge codex`**, once quota returns — with ADR 0009 §5's mixed
    panel and `combineVerdicts` at submit time over the full panel.
 3. **A release.** Phase 2 now has a user-visible capability for the first time, so a `0.3.0` is
