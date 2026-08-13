@@ -2,6 +2,20 @@
 
 Plan date: 2026-08-13. Brief of record: [`V2-BRIEF.md`](./V2-BRIEF.md).
 
+> **Status: Phase 1 (Foundations) shipped as v0.2.0 on 2026-08-13.**
+>
+> Section 1 is an audit of the tree *as it stood before Phase 1* and is deliberately left as
+> written — it is a record of what was found, not a description of the code today. Several of its
+> observations have since been acted on: SVG now lives in `providers/svg.mjs` with
+> `scripts/providers/svg.mjs` a re-export shim, the Codex geometry is a capability record on its
+> manifest, and both scripts are in-process shims over `surfaces/cli/`. Read section 1 as history;
+> read [`adr/`](./adr/) for what is currently true.
+>
+> Phase 1 met its definition of done with one exception recorded in
+> [ADR 0008](./adr/0008-artifact-provenance-and-freshness.md): a *single* foreign recovery
+> candidate is still adopted, because timestamps alone cannot distinguish it. Multi-candidate
+> ambiguity is rejected.
+
 The thesis is worth pursuing, but the brief is not implementable unchanged. The Gemini
 zero-key path is no longer available to consumer accounts, the proposed synchronous `host`
 judge has a control-flow deadlock, and the release bundles too many independent products into

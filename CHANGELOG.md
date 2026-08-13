@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- Session-directory recovery guessed when it could not prove ownership: it adopted the newest
+  post-start PNG under `$CODEX_HOME/generated_images`, so two runs sharing a `CODEX_HOME` could
+  each adopt the other's image and report success on an asset they never generated — a silent
+  wrong result. Recovery now rejects an ambiguous scan: more than one post-start candidate fails
+  the run with an `Ambiguous image recovery` error naming every candidate and its mtime, and no
+  file is moved, adopted, or deleted. This eliminates cross-run adoption; it does not make
+  concurrent runs sharing a `CODEX_HOME` work — both now fail instead of one succeeding wrongly.
+  Runs with a provable answer (a directly written target, exactly one candidate, or none) are
+  unchanged, as are all flags, output and exit codes.
+
 ## [0.2.0] - 2026-08-13
 
 ### Added

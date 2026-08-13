@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, readFile, stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
+// Imported through the v1 façade on purpose: the shim is part of the frozen
+// surface, so exercising the whole suite through it keeps a broken re-export
+// from passing unnoticed. The implementation itself now lives in
+// `providers/svg.mjs`.
 import { generateWithSvg, validateSvgXml } from '../scripts/providers/svg.mjs';
 import {
   hasSharp,
+  isolateModule,
   removeTemporaryDirectory,
-  repositoryRoot,
   temporaryDirectory,
 } from './helpers/compat-harness.mjs';
 
@@ -105,12 +109,17 @@ test('rasterizes through sharp when present and asserts companion-SVG degradatio
       await assert.rejects(stat(outputPath), { code: 'ENOENT' });
     }
 
-    const isolatedDirectory = path.join(root, 'isolated');
-    const isolatedProviderPath = path.join(isolatedDirectory, 'svg.mjs');
-    await mkdir(isolatedDirectory);
-    await copyFile(
-      path.join(repositoryRoot, 'scripts', 'providers', 'svg.mjs'),
-      isolatedProviderPath,
+    // The provider now lives under `providers/` and imports `core/`, so the
+    // harness copies that layer alongside it rather than the file alone: a lone
+    // copy would fail to resolve `../core/...` and the run would die for a
+    // reason unrelated to `sharp`. Isolation still comes from the destination
+    // having no `node_modules`, which is why `sharp` genuinely cannot load
+    // there.
+    const isolatedRoot = path.join(root, 'isolated');
+    const isolatedProviderPath = await isolateModule(
+      isolatedRoot,
+      'providers/svg.mjs',
+      ['core'],
     );
     const isolated = await import(`${pathToFileURL(isolatedProviderPath).href}?no-sharp`);
     const isolatedPng = path.join(root, 'isolated-output', 'icon.png');

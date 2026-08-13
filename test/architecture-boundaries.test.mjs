@@ -130,7 +130,16 @@ function topLevelTargetOf(specifier, importerRelativePath) {
   return specifier.split('/')[0];
 }
 
+/**
+ * Layers `surfaces/` is forbidden to reach into. `scripts/` is the v1
+ * compatibility façade and is due for deletion; a surface that imports it makes
+ * the new layer depend on the old one, which is the inversion ADR 0002 exists to
+ * prevent. Surfaces reach `providers/` and `core/` directly.
+ */
+const FORBIDDEN_FROM_SURFACES = Object.freeze(['scripts']);
+
 const coreFiles = walk(path.join(REPO_ROOT, 'core'));
+const surfaceFiles = walk(path.join(REPO_ROOT, 'surfaces'));
 
 test('core/ exists and contains source files (guards against a vacuous pass)', () => {
   assert.ok(
@@ -158,6 +167,36 @@ test('no file under core/ imports scripts/, providers/, or surfaces/', () => {
     violations,
     [],
     `core/ must not depend on outer layers (ADR 0002):\n${violations.join('\n')}`,
+  );
+});
+
+test('surfaces/ exists and contains source files (guards against a vacuous pass)', () => {
+  assert.ok(
+    surfaceFiles.some((file) => SOURCE_EXTENSIONS.has(path.extname(file))),
+    'expected at least one JavaScript source file under surfaces/',
+  );
+});
+
+test('no file under surfaces/ imports scripts/', () => {
+  const violations = [];
+
+  for (const file of surfaceFiles) {
+    if (!SOURCE_EXTENSIONS.has(path.extname(file))) continue;
+
+    const source = readFileSync(path.join(REPO_ROOT, file), 'utf8');
+    for (const specifier of moduleSpecifiers(source)) {
+      const target = topLevelTargetOf(specifier, file);
+      if (target !== null && FORBIDDEN_FROM_SURFACES.includes(target)) {
+        violations.push(`${file} -> ${specifier} (resolves into ${target}/)`);
+      }
+    }
+  }
+
+  assert.deepEqual(
+    violations,
+    [],
+    'surfaces/ must not depend on the v1 compatibility façade in scripts/ '
+      + `(ADR 0002); import providers/ or core/ directly:\n${violations.join('\n')}`,
   );
 });
 

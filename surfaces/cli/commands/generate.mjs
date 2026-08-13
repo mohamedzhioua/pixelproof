@@ -11,10 +11,12 @@
  * generate` is a synonym for `scripts/generate.mjs`, not a new dialect, so the
  * banner still names the script.
  *
- * The provider imports deliberately point at `scripts/providers/*`, which is
- * where the legacy entry point pointed. Those files are the v1 import path and
- * re-export the real implementations; going through them keeps this handler and
- * the v1 characterization tests on one module instance instead of two.
+ * The provider imports point at `providers/*`, where the implementations live.
+ * They used to go through `scripts/providers/*`, the v1 import path, which made
+ * this layer depend on the façade that is due for deletion (ADR 0002 runs
+ * `surfaces → providers → core`). Nothing changes for the v1 characterization
+ * tests: those shims re-export these same modules, so both routes still resolve
+ * to one module instance, not two.
  */
 
 import { constants as fsConstants } from 'node:fs';
@@ -37,8 +39,8 @@ import {
   printUsageError,
 } from '../format-errors.mjs';
 import { printVerificationResult, printWarning } from '../format-verification.mjs';
-import { assertCodexSize, generateWithCodex } from '../../../scripts/providers/codex.mjs';
-import { generateWithSvg } from '../../../scripts/providers/svg.mjs';
+import { assertCodexSize, generateWithCodex } from '../../../providers/codex.mjs';
+import { generateWithSvg } from '../../../providers/svg.mjs';
 import { verifyImage } from './verify.mjs';
 
 async function commandOnPath(command) {
