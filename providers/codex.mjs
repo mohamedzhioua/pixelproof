@@ -391,6 +391,34 @@ function isPng({ name }) {
   return name.toLowerCase().endsWith('.png');
 }
 
+/**
+ * The message for an unprovable recovery (ADR 0008).
+ *
+ * Every fresh PNG under `$CODEX_HOME/generated_images` is equally plausible as
+ * this run's output: Codex writes into a per-session directory whose name it
+ * does not report back in any form this adapter can rely on — the transcript is
+ * unstructured and kept only as a bounded tail — so there is nothing to
+ * correlate a file to a session with. "Newest wins" was therefore a guess, and a
+ * guess that lands on another run's image reports success on the wrong asset,
+ * silently. This message replaces that guess.
+ *
+ * It names every candidate because the user, unlike the adapter, can often tell
+ * which is which, and because the paths are the evidence that a second run was
+ * in flight. Nothing is moved or deleted on this path: the files stay where
+ * Codex put them.
+ */
+function ambiguousRecoveryMessage(candidates, recoveryRoot, notBefore) {
+  const listed = candidates
+    .map((candidate) => `  - ${candidate.path} (modified "${new Date(candidate.mtimeMs).toISOString()}")`)
+    .join('\n');
+  return `Ambiguous image recovery: ${candidates.length} images under ${recoveryRoot} were created `
+    + `after this run started ("${new Date(notBefore).toISOString()}"), and Codex does not report `
+    + `which session directory was this run's, so none of them can be proven to belong to it.\n`
+    + `Candidates (newest first):\n${listed}\n`
+    + `This usually means another Codex or Pixelproof run shared this CODEX_HOME. `
+    + `No file was moved, adopted, or deleted; re-run when no other run is in flight.`;
+}
+
 function failureMessage(result, targetPath, staleTarget) {
   const reason = result.timedOut
     ? 'Codex timed out'
@@ -462,7 +490,27 @@ async function runCodexGeneration({ prompt, outPath, width, height, timeoutMs = 
       notBefore: recovery.ms,
       accept: isPng,
     });
-    const chosen = selectArtifact(candidates);
+    // `reject`, not `newest`: with more than one fresh candidate this run cannot
+    // prove which file is its own, and an unprovable artifact is not an
+    // artifact (ADR 0008).
+    //
+    // What this buys and what it does not, precisely:
+    // - It eliminates silent cross-adoption. A run can no longer finish with
+    //   another run's image at its output path while reporting success.
+    // - It does NOT make concurrent runs sharing a CODEX_HOME work. Both runs
+    //   now fail rather than one of them succeeding wrongly. That is the trade,
+    //   and it is the right way round: a failure is retryable, a wrong image
+    //   that has been "verified" is not detectable downstream.
+    //
+    // The narrowness matters for compatibility: this branch is only reachable
+    // when the target was not written directly and the scan found two or more
+    // fresh files — exactly the case where the old code guessed. Every path
+    // where v1 had a provable answer (direct write, single candidate, no
+    // candidate) behaves as it always did.
+    const chosen = selectArtifact(candidates, { policy: 'reject' });
+    if (chosen.ambiguous) {
+      throw new Error(ambiguousRecoveryMessage(chosen.candidates, recoveryRoot, recovery.ms));
+    }
     if (chosen.path) {
       status = await adoptArtifact({ source: chosen.path, target });
       onWarning(

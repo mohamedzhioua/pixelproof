@@ -382,55 +382,90 @@ test('represents both README SVG generation examples with and without optional r
   }
 });
 
-// ADR 0008 will close this cross-run correlation hole with run-owned artifact identity.
-test('two concurrent runs sharing CODEX_HOME cannot recover each other\'s images', { todo: true }, async () => {
+// ADR 0008: neither run can prove which session image is its own, so both are
+// rejected. The old behaviour — newest fresh PNG wins — let one run adopt the
+// other's image and report success, which is a silent wrong result.
+//
+// The two file barriers below make this deterministic rather than racy. Barrier
+// one holds both fake sessions until both runs exist, so neither image can be
+// written before the other run has sampled its run-start reference (an image
+// written earlier would look stale to the later run, leaving it a single
+// unambiguous candidate). Barrier two holds both sessions open until both images
+// are on disk, so each run's recovery scan — which happens after its own child
+// exits — is guaranteed to see two candidates. Nothing here depends on a sleep
+// or on which run wins a race.
+test("two concurrent runs sharing CODEX_HOME are rejected as ambiguous instead of recovering each other's images", async () => {
   const root = await temporaryDirectory('pixelproof-concurrent-home-');
   const fakeSource = `
     import { access, mkdir, writeFile } from 'node:fs/promises';
     import path from 'node:path';
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const root = process.env.PIXELPROOF_FAKE_ROOT;
-    const started = path.join(root, 'victim-started');
-    const foreignReady = path.join(root, 'foreign-ready');
+    const role = process.env.PIXELPROOF_FAKE_ROLE;
+    const other = role === 'first' ? 'second' : 'first';
+    const marker = (name) => path.join(root, name);
     async function waitFor(file) {
-      const deadline = Date.now() + 15000;
+      const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
         try { await access(file); return; } catch (error) {
           if (error.code !== 'ENOENT') throw error;
         }
         await sleep(25);
       }
-      throw new Error('coordination timeout');
+      throw new Error('coordination timeout waiting for ' + file);
     }
-    if (process.env.PIXELPROOF_FAKE_ROLE === 'victim') {
-      await writeFile(started, 'ready');
-      await waitFor(foreignReady);
-    } else {
-      await waitFor(started);
-      const directory = path.join(process.env.CODEX_HOME, 'generated_images', 'foreign-run');
-      await mkdir(directory, { recursive: true });
-      await writeFile(path.join(directory, 'foreign.png'), 'foreign run image');
-      await writeFile(foreignReady, 'ready');
-      await sleep(5000);
-    }
+
+    await writeFile(marker(role + '-started'), 'ready');
+    await waitFor(marker(other + '-started'));
+
+    const directory = path.join(process.env.CODEX_HOME, 'generated_images', role + '-session');
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'exec-' + role + '.png'), role + ' run image');
+
+    await writeFile(marker(role + '-image'), 'ready');
+    await waitFor(marker(other + '-image'));
   `;
 
   try {
     const fake = await createFakeCodex(root, fakeSource);
-    const victimTarget = path.join(root, 'victim', 'result.png');
-    const foreignTarget = path.join(root, 'foreign', 'result.png');
-    const victim = runScriptAsync(generatorPath, [
-      '--provider', 'codex', '--prompt', 'victim run', '--out', victimTarget,
-    ], { env: fake.env({ PIXELPROOF_FAKE_ROOT: root, PIXELPROOF_FAKE_ROLE: 'victim' }) });
-    await waitForFile(path.join(root, 'victim-started'));
-    const foreign = runScriptAsync(generatorPath, [
-      '--provider', 'codex', '--prompt', 'foreign run', '--out', foreignTarget,
-    ], { env: fake.env({ PIXELPROOF_FAKE_ROOT: root, PIXELPROOF_FAKE_ROLE: 'foreign' }) });
-    const [victimResult] = await Promise.all([victim, foreign]);
-    const normalised = normaliseResult(victimResult, { TMP: root });
+    const firstTarget = path.join(root, 'first', 'result.png');
+    const secondTarget = path.join(root, 'second', 'result.png');
+    const first = runScriptAsync(generatorPath, [
+      '--provider', 'codex', '--prompt', 'first run', '--out', firstTarget,
+    ], { env: fake.env({ PIXELPROOF_FAKE_ROOT: root, PIXELPROOF_FAKE_ROLE: 'first' }) });
+    await waitForFile(path.join(root, 'first-started'));
+    const second = runScriptAsync(generatorPath, [
+      '--provider', 'codex', '--prompt', 'second run', '--out', secondTarget,
+    ], { env: fake.env({ PIXELPROOF_FAKE_ROOT: root, PIXELPROOF_FAKE_ROLE: 'second' }) });
+    const results = await Promise.all([first, second]);
 
-    assert.equal(normalised.status, 1, normalised.stdout);
-    await assert.rejects(stat(victimTarget), { code: 'ENOENT' });
+    for (const [role, raw] of [['first', results[0]], ['second', results[1]]]) {
+      const normalised = normaliseResult(raw, { TMP: root });
+      assert.equal(normalised.status, 1, `${role}: ${normalised.stdout}${normalised.stderr}`);
+      assert.equal(normalised.stdout, '');
+      assert.match(
+        normalised.stderr,
+        /Generation error: Ambiguous image recovery: 2 images under <TMP>\/codex-home\/generated_images were created after this run started/,
+      );
+      // Both candidates are named, so the user can see the other run.
+      assert.match(normalised.stderr, /first-session\/exec-first\.png \(modified "<TIMESTAMP>"\)/);
+      assert.match(normalised.stderr, /second-session\/exec-second\.png \(modified "<TIMESTAMP>"\)/);
+      assert.match(normalised.stderr, /No file was moved, adopted, or deleted/);
+    }
+
+    // Neither run adopted anything: no target was written, and both session
+    // images are still where Codex left them.
+    await assert.rejects(stat(firstTarget), { code: 'ENOENT' });
+    await assert.rejects(stat(secondTarget), { code: 'ENOENT' });
+    const sessions = path.join(root, 'codex-home', 'generated_images');
+    assert.equal(
+      await readFile(path.join(sessions, 'first-session', 'exec-first.png'), 'utf8'),
+      'first run image',
+    );
+    assert.equal(
+      await readFile(path.join(sessions, 'second-session', 'exec-second.png'), 'utf8'),
+      'second run image',
+    );
   } finally {
     await removeTemporaryDirectory(root);
   }
