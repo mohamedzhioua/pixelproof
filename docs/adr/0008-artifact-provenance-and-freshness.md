@@ -48,3 +48,21 @@ adopted. Closing that needs positive identity — a run-owned output location or
 identifier Codex reports back — not a stricter reading of the same scan. Isolating `CODEX_HOME`
 per run is not the answer: Codex keeps its credentials there, so a scratch home breaks
 authentication.
+
+**Rejected refinement: grouping candidates by session directory.** The concern was that a single
+run emitting several images would now fail, so ambiguity should be counted in *distinct session
+directories* rather than in candidates — one directory being one session, newest-wins inside it.
+It was implemented and reverted, because the premise did not survive measurement.
+
+Counted on a real `CODEX_HOME` here: session directories hold between 0 and 47 images, so
+multi-image sessions plainly exist — but every directory created by a `codex exec` run, which is
+the only way this adapter invokes Codex, held exactly one. The multi-image directories are
+interactive sessions, a mode this adapter never produces. The refinement therefore fixed a failure
+that does not occur for our invocation, and cost real safety: two *foreign* images sharing one
+session directory would group to a single origin and be adopted, where counting candidates
+rejects them.
+
+The general rule, since this will come up again: when relaxing a strict check to avoid a false
+positive, confirm the false positive occurs in the usage *this code has*, not in the tool's
+behaviour generally. The evidence for relaxing came from a different usage mode than the one being
+protected, and the existing tests are what caught it.
