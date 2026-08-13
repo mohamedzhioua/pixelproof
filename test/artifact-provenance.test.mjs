@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -11,6 +11,7 @@ import {
   artifactStatus,
   collectFreshArtifacts,
   prepareTarget,
+  runReference,
   selectArtifact,
   validateTarget,
 } from '../core/artifacts/provenance.mjs';
@@ -27,7 +28,10 @@ async function writeStale(filePath, contents) {
 test('a file counts as produced only when it exists and is not older than the run', async () => {
   const root = await temporaryDirectory('pixelproof-provenance-status-');
   try {
-    const notBefore = Date.now();
+    // Sampled from the filesystem under test, not from Date.now(): on Linux the
+    // two are different clocks and the fine-grained one runs ahead of the mtimes
+    // this directory hands out, which would make `fresh.png` below look stale.
+    const { ms: notBefore } = await runReference(root);
     const missing = path.join(root, 'nothing.png');
     const stale = path.join(root, 'stale.png');
     const fresh = path.join(root, 'fresh.png');
@@ -67,6 +71,74 @@ test('prepareTarget resolves the path, creates its directory, and freezes the ru
     assert.throws(() => {
       target.startedAt = 0;
     }, TypeError, 'a mutable run start is a freshness check that can be argued out of failing');
+  } finally {
+    await removeTemporaryDirectory(root);
+  }
+});
+
+/**
+ * Regression for the two-clock freshness bug.
+ *
+ * The assertions below are host-independent by construction: every value in the
+ * ordering check comes from the filesystem itself, so it holds identically on a
+ * coarse-mtime host (Linux, where the bug reproduced) and a fine-grained one
+ * (Windows, where it never did). A reference taken from `Date.now()` instead
+ * fails the upper bound on any host whose mtime clock lags the wall clock, and
+ * fails `startedAtSource` everywhere — so a revert cannot pass quietly on the
+ * developer's machine and break only in CI, which is how this shipped.
+ */
+test('the run start is sampled from the filesystem that stamps the artifacts, not from Date.now()', async () => {
+  const root = await temporaryDirectory('pixelproof-provenance-clock-');
+  try {
+    const before = path.join(root, 'before.bin');
+    await writeFile(before, 'written before the run started');
+    const beforeMtimeMs = (await stat(before)).mtimeMs;
+
+    const target = await prepareTarget(path.join(root, 'out', 'result.png'));
+
+    const after = path.join(root, 'after.bin');
+    await writeFile(after, 'written after the run started');
+    const afterMtimeMs = (await stat(after)).mtimeMs;
+
+    assert.equal(target.startedAtSource, 'filesystem');
+    assert.ok(
+      target.startedAt >= beforeMtimeMs,
+      'a run start behind files that already existed would adopt them as fresh',
+    );
+    assert.ok(
+      target.startedAt <= afterMtimeMs,
+      'a run start ahead of the mtimes this filesystem hands out rejects the run own artifacts',
+    );
+
+    await writeFile(target.path, 'produced by this run');
+    const produced = await validateTarget(target);
+    assert.equal(produced.fresh, true, 'a file written after the run started is a product of the run');
+    assert.equal(produced.state, PRODUCED);
+
+    // The guarantee that must not weaken while fixing the one above.
+    await writeStale(target.path, 'left over from last week');
+    const stale = await validateTarget(target);
+    assert.equal(stale.fresh, false, 'a days-old file is still not a product of this run');
+    assert.equal(stale.state, STALE);
+  } finally {
+    await removeTemporaryDirectory(root);
+  }
+});
+
+test('a run reference falls back to the clock, visibly, when the filesystem cannot be sampled', async () => {
+  const root = await temporaryDirectory('pixelproof-provenance-reference-');
+  try {
+    const sampled = await runReference(root);
+    assert.equal(sampled.source, 'filesystem');
+    assert.equal(Number.isFinite(sampled.ms), true);
+    assert.deepEqual(await readdir(root), [], 'the probe marker must not survive the sample');
+
+    // A directory that does not exist is the recovery-scan case: a provider that
+    // has never run has no session directory to sample.
+    const missing = await runReference(path.join(root, 'never-created'), { fallback: 1234 });
+    assert.deepEqual(missing, { ms: 1234, source: 'clock' });
+
+    await assert.rejects(runReference(''), TypeError);
   } finally {
     await removeTemporaryDirectory(root);
   }
@@ -150,6 +222,7 @@ test('more than one fresh candidate is ambiguous, and the strict policy refuses 
 test('provenance rejects a run start it cannot trust', async () => {
   await assert.rejects(artifactStatus('anything.png', undefined), TypeError);
   await assert.rejects(prepareTarget(''), TypeError);
+  await assert.rejects(prepareTarget('out.png', { startedAt: 'now' }), TypeError);
   await assert.rejects(validateTarget(null), TypeError);
   await assert.rejects(adoptArtifact({ source: 'a.png', target: null }), TypeError);
 });

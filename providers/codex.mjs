@@ -32,6 +32,7 @@ import {
   adoptArtifact,
   collectFreshArtifacts,
   prepareTarget,
+  runReference,
   selectArtifact,
   validateTarget,
 } from '../core/artifacts/provenance.mjs';
@@ -426,6 +427,16 @@ async function runCodexGeneration({ prompt, outPath, width, height, timeoutMs = 
   }
 
   const target = await prepareTarget(outPath);
+  // The recovery scan reads Codex's own session directory, which is under
+  // $CODEX_HOME and need not share a filesystem with the output directory. A
+  // run-start reference is only comparable to mtimes stamped by the same
+  // filesystem, so that directory gets its own sample, taken here — before the
+  // run — rather than borrowed from the target. If it does not exist yet
+  // (Codex has never produced an image) there is nothing to sample and nothing
+  // to recover; the target's reference is the fallback, which is exactly the
+  // behaviour that shipped.
+  const recoveryRoot = generatedImagesDirectory();
+  const recovery = await runReference(recoveryRoot, { fallback: target.startedAt });
   const generationPrompt = composePrompt({
     prompt,
     width: desiredWidth,
@@ -447,8 +458,8 @@ async function runCodexGeneration({ prompt, outPath, width, height, timeoutMs = 
 
   if (!status.fresh) {
     const candidates = await collectFreshArtifacts({
-      roots: [generatedImagesDirectory()],
-      notBefore: target.startedAt,
+      roots: [recoveryRoot],
+      notBefore: recovery.ms,
       accept: isPng,
     });
     const chosen = selectArtifact(candidates);

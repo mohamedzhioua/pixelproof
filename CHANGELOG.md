@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- Freshness was decided by comparing two different clocks: the run start came from `Date.now()`
+  while an artifact's age came from its filesystem mtime. On Linux, where inode timestamps are
+  stamped from a coarse, tick-granular clock that lags the fine-grained one, a file written after
+  the run began could carry an earlier mtime and be rejected as stale — failing a run that had in
+  fact succeeded. The run start is now sampled from the same filesystem that stamps the artifact,
+  and the Codex recovery scan samples `$CODEX_HOME/generated_images` separately because it may
+  live on another mount.
+
 ## [0.1.2] - 2026-08-13
 
 ### Fixed
