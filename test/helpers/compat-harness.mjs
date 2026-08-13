@@ -7,6 +7,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -23,8 +24,18 @@ export const repositoryRoot = path.resolve(
 export const generatorPath = path.join(repositoryRoot, 'scripts', 'generate.mjs');
 export const verifierPath = path.join(repositoryRoot, 'scripts', 'verify.mjs');
 
+/**
+ * Always returns the *resolved* path.
+ *
+ * On macOS `os.tmpdir()` is `/var/folders/...`, which is a symlink to
+ * `/private/var/folders/...`. Anything that resolves the real path — Node's ESM
+ * loader, or the product writing a file and reporting where it landed — emits
+ * the `/private` form, while a token built from the unresolved path only matches
+ * the tail. That leaves `/private<TMP>` stranded in normalised output and fails
+ * assertions on macOS alone, which is invisible from Linux or Windows.
+ */
 export async function temporaryDirectory(prefix) {
-  return mkdtemp(path.join(os.tmpdir(), prefix));
+  return realpath(await mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 export async function removeTemporaryDirectory(directory) {
@@ -47,7 +58,13 @@ export async function removeTemporaryDirectory(directory) {
 export async function isolateVerifier(root) {
   const isolatedVerifier = path.join(root, 'scripts', 'verify.mjs');
   await mkdir(path.dirname(isolatedVerifier), { recursive: true });
-  await cp(path.join(repositoryRoot, 'core'), path.join(root, 'core'), { recursive: true });
+  // Every layer the verifier imports must come along. Copying a subset makes the
+  // run fail with ERR_MODULE_NOT_FOUND, which from outside is indistinguishable
+  // from the missing-decoder condition this helper exists to create — a test
+  // that "passes" for the wrong reason, or fails for one.
+  for (const layer of ['core', 'surfaces']) {
+    await cp(path.join(repositoryRoot, layer), path.join(root, layer), { recursive: true });
+  }
   await copyFile(verifierPath, isolatedVerifier);
   return isolatedVerifier;
 }

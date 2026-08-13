@@ -4,10 +4,10 @@
  * Legacy entry point for the generator.
  *
  * Spec loading, dimension precedence, prompt folding and the one-attempt run
- * now live in `core/`; what remains here is argument parsing, provider
- * selection, presentation and exit policy. All of that is frozen public surface
- * (ADR 0003), so this file keeps its flags, its output text, its channels and
- * its exit codes exactly as v1 shipped them.
+ * now live in `core/`, and argument parsing and presentation in `surfaces/cli/`;
+ * what remains here is provider selection, composition and exit policy. Flags,
+ * output text, channels and exit codes are frozen public surface (ADR 0003), so
+ * this file still behaves exactly as v1 shipped it.
  */
 
 import { constants as fsConstants } from 'node:fs';
@@ -23,65 +23,17 @@ import {
   resolveDimensions,
 } from '../core/spec/dimensions.mjs';
 import { loadV1Spec, mechanicalBlock, specFromSize } from '../core/spec/load-v1.mjs';
+import { GENERATE_USAGE, parseGenerateArguments } from '../surfaces/cli/parse.mjs';
+import {
+  printGenerationError,
+  printMissingOption,
+  printUsage,
+  printUsageError,
+} from '../surfaces/cli/format-errors.mjs';
+import { printVerificationResult, printWarning } from '../surfaces/cli/format-verification.mjs';
 import { assertCodexSize, generateWithCodex } from './providers/codex.mjs';
 import { generateWithSvg } from './providers/svg.mjs';
-import { printVerificationResult, verifyImage } from './verify.mjs';
-
-function usage() {
-  return `pixelproof image generator
-
-Usage:
-  node scripts/generate.mjs --prompt "<text>" --out <path> [options]
-
-Options:
-  --prompt <text>          Raster generation prompt (required for Codex)
-  --out <path>             Target .png or .svg path (required)
-  --provider codex|svg     Override provider selection
-  --size <WxH>             Desired pixels; verified when --spec is absent
-  --spec <file>            Fold a JSON spec into the prompt and verify it; spec dimensions win
-  --svg-file <path>        SVG source for the svg provider; otherwise read stdin
-  -h, --help               Show this help
-
-Size verification:
-  --size without --spec creates a width/height mechanical spec and affects the exit code.
-  Codex sizes must have edges divisible by 16, each edge <= 3840, an aspect ratio <= 3:1,
-  and a total pixel count from 655360 through 8294400.
-
-Provider selection:
-  --provider, then PIXELPROOF_PROVIDER, then .svg output, then Codex on PATH.
-`;
-}
-
-function parseArgs(argv) {
-  const options = { help: false };
-  const valuedOptions = new Set([
-    '--prompt',
-    '--out',
-    '--provider',
-    '--size',
-    '--spec',
-    '--svg-file',
-  ]);
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
-    if (argument === '-h' || argument === '--help') {
-      options.help = true;
-    } else if (valuedOptions.has(argument)) {
-      const value = argv[index + 1];
-      if (!value || value.startsWith('--')) {
-        throw new Error(`${argument} requires a value`);
-      }
-      const key = argument.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-      options[key] = value;
-      index += 1;
-    } else {
-      throw new Error(`Unknown argument: ${argument}`);
-    }
-  }
-
-  return options;
-}
+import { verifyImage } from './verify.mjs';
 
 async function commandOnPath(command) {
   const pathValue = process.env.PATH ?? '';
@@ -174,19 +126,19 @@ async function prepareGeneration({ provider, options, dimensions, verificationSp
 async function main() {
   let options;
   try {
-    options = parseArgs(process.argv.slice(2));
+    options = parseGenerateArguments(process.argv.slice(2));
   } catch (error) {
-    console.error(`Error: ${error.message}\n\n${usage()}`);
+    printUsageError(error.message, GENERATE_USAGE);
     process.exitCode = 1;
     return;
   }
 
   if (options.help) {
-    console.log(usage());
+    printUsage(GENERATE_USAGE);
     return;
   }
   if (!options.out) {
-    console.error(`Error: --out is required\n\n${usage()}`);
+    printMissingOption('--out', GENERATE_USAGE);
     process.exitCode = 1;
     return;
   }
@@ -198,7 +150,7 @@ async function main() {
     const dimensions = resolveDimensions(requestedSize, mechanicalBlock(spec));
     if (specPath) {
       const disagreement = describeSizeDisagreement(requestedSize, dimensions);
-      if (disagreement) console.warn(`Warning: ${disagreement}`);
+      if (disagreement) printWarning(disagreement);
     }
 
     const provider = await resolveProvider(options);
@@ -223,7 +175,7 @@ async function main() {
       onGenerated(generation) {
         console.log(`Provider: ${provider}`);
         console.log(`Output: ${generation.outputPath}`);
-        for (const warning of generation.warnings ?? []) console.warn(`Warning: ${warning}`);
+        for (const warning of generation.warnings ?? []) printWarning(warning);
       },
       verify: verificationSpec
         ? async (generation) => {
@@ -231,8 +183,8 @@ async function main() {
           // to inspect. Saying so is the point: a silent pass here would be the
           // unverified-claim failure this tool exists to prevent.
           if (!generation.outputPath.toLowerCase().endsWith('.png')) {
-            console.warn(
-              'Warning: mechanical verification needs a PNG raster; the validated SVG was kept, '
+            printWarning(
+              'mechanical verification needs a PNG raster; the validated SVG was kept, '
                 + 'but no raster was available to inspect.',
             );
             return null;
@@ -250,7 +202,7 @@ async function main() {
 
     if (!ok) process.exitCode = 1;
   } catch (error) {
-    console.error(`Generation error: ${error.message}`);
+    printGenerationError(error);
     process.exitCode = 1;
   }
 }

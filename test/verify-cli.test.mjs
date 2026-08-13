@@ -30,11 +30,13 @@ test('makes skipped checks legible and strict-mode failures machine-readable', a
     // makes `sharp` unresolvable — that, and not the file layout, is the
     // condition under test.
     await mkdir(path.dirname(isolatedVerifier), { recursive: true });
-    await cp(
-      path.join(repositoryRoot, 'core'),
-      path.join(temporaryDirectory, 'core'),
-      { recursive: true },
-    );
+    for (const layer of ['core', 'surfaces']) {
+      await cp(
+        path.join(repositoryRoot, layer),
+        path.join(temporaryDirectory, layer),
+        { recursive: true },
+      );
+    }
     await Promise.all([
       copyFile(path.join(repositoryRoot, 'scripts', 'verify.mjs'), isolatedVerifier),
       writeFile(imagePath, Buffer.from(onePixelPng, 'base64')),
