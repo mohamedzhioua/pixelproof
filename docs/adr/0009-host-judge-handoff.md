@@ -1,9 +1,11 @@
 # 0009 — Host judge handoff
 
 - **Class:** User-Challenge
-- **Status:** Proposed — the recommended call is written below as the decision; it needs
-  maintainer confirmation before Phase 2 implementation begins.
+- **Status:** Accepted
 - **Date:** 2026-08-13
+- **Maintainer confirmation:** confirmed by the maintainer on 2026-08-13, including the two points
+  the design flagged as least certain — promotion-on-acceptance, and a round-2 host verdict
+  replacing rather than joining the panel.
 
 ## Context
 
