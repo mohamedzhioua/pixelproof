@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   hasSharp,
+  isolateVerifier,
   normaliseResult,
   normaliseText,
   removeTemporaryDirectory,
@@ -134,11 +135,10 @@ test('represents every README verify example and freezes human and JSON result c
 test('asserts the documented no-sharp SKIP path instead of skipping the test', async () => {
   const root = await temporaryDirectory('pixelproof-verify-isolated-');
   try {
-    const isolatedVerifier = path.join(root, 'verify.mjs');
     const imagePath = path.join(root, 'probe.png');
     const specPath = path.join(root, 'spec.json');
+    const isolatedVerifier = await isolateVerifier(root);
     await Promise.all([
-      copyFile(verifierPath, isolatedVerifier),
       writePng(imagePath, 2, 2),
       writeFile(specPath, JSON.stringify({
         mechanical: {

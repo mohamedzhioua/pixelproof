@@ -3,6 +3,7 @@ import { copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
+import { missingDecoder } from '../core/verification/inspect.mjs';
 import { verifyImage } from '../scripts/verify.mjs';
 import {
   hasSharp,
@@ -202,18 +203,18 @@ test('rejects malformed PNG data and invalid mechanical check values', async () 
 test('isolates decoder discovery to prove no-sharp skips and strict failure', async () => {
   const root = await temporaryDirectory('pixelproof-core-no-sharp-');
   try {
-    const isolatedDirectory = path.join(root, 'isolated');
-    const isolatedVerifier = path.join(isolatedDirectory, 'verify.mjs');
     const imagePath = path.join(root, 'probe.png');
-    await mkdir(isolatedDirectory);
-    await Promise.all([
-      copyFile(verifierPath, isolatedVerifier),
-      writePng(imagePath, 2, 2),
-    ]);
-    const isolated = await import(`${pathToFileURL(isolatedVerifier).href}?no-sharp`);
-    const result = await isolated.verifyImage({
+    await writePng(imagePath, 2, 2);
+
+    // The decoder probe is injected rather than defeated by copying this module
+    // to a directory where `sharp` cannot resolve. That trick asserted on module
+    // layout rather than behaviour, and it stopped isolating anything the moment
+    // the verifier gained an import of its own — a missing-module error is not a
+    // missing-decoder error, but it fails the same way.
+    const result = await verifyImage({
       filePath: imagePath,
       strict: true,
+      loadDecoder: missingDecoder(),
       spec: {
         mechanical: {
           width: 2,

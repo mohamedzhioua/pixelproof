@@ -2,6 +2,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import {
   access,
   chmod,
+  copyFile,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -27,6 +29,27 @@ export async function temporaryDirectory(prefix) {
 
 export async function removeTemporaryDirectory(directory) {
   await rm(directory, { recursive: true, force: true });
+}
+
+/**
+ * Copy the verifier into `root` so it runs where `sharp` cannot be resolved,
+ * which is how the degraded CLI path is exercised without uninstalling anything.
+ *
+ * The whole module tree is copied, not just the entry file: the verifier imports
+ * `../core/`, and a lone copy would fail with a missing-module error rather than
+ * a missing-decoder one. Those fail identically from the outside, so a test that
+ * copied only the entry point would still be green while proving nothing.
+ *
+ * Isolation comes from the destination having no `node_modules`. In-process
+ * callers should inject `loadDecoder` instead; this exists for CLI-level tests,
+ * where there is deliberately no flag to defeat decoder discovery.
+ */
+export async function isolateVerifier(root) {
+  const isolatedVerifier = path.join(root, 'scripts', 'verify.mjs');
+  await mkdir(path.dirname(isolatedVerifier), { recursive: true });
+  await cp(path.join(repositoryRoot, 'core'), path.join(root, 'core'), { recursive: true });
+  await copyFile(verifierPath, isolatedVerifier);
+  return isolatedVerifier;
 }
 
 export function environment(overrides = {}) {

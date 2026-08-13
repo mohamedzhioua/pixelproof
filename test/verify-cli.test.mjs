@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -19,11 +19,22 @@ function runVerifier(scriptPath, imagePath, specPath, ...extraArguments) {
 
 test('makes skipped checks legible and strict-mode failures machine-readable', async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), 'pixelproof-no-sharp-'));
-  const isolatedVerifier = path.join(temporaryDirectory, 'verify.mjs');
+  const isolatedVerifier = path.join(temporaryDirectory, 'scripts', 'verify.mjs');
   const imagePath = path.join(temporaryDirectory, 'probe.png');
   const specPath = path.join(temporaryDirectory, 'spec.json');
 
   try {
+    // Copy the module tree, not just the entry file: the verifier imports
+    // ../core/, so an isolated copy has to preserve that layout. The isolation
+    // itself comes from the temp directory having no node_modules, which is what
+    // makes `sharp` unresolvable — that, and not the file layout, is the
+    // condition under test.
+    await mkdir(path.dirname(isolatedVerifier), { recursive: true });
+    await cp(
+      path.join(repositoryRoot, 'core'),
+      path.join(temporaryDirectory, 'core'),
+      { recursive: true },
+    );
     await Promise.all([
       copyFile(path.join(repositoryRoot, 'scripts', 'verify.mjs'), isolatedVerifier),
       writeFile(imagePath, Buffer.from(onePixelPng, 'base64')),
