@@ -1,6 +1,6 @@
 {
   "name": "pixelproof",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Spec-driven image generation and two-tier verification for Claude Code.",
   "type": "module",
   "private": true,
