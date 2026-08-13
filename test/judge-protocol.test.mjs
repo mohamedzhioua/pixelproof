@@ -200,6 +200,62 @@ test('consensus rejects nonsense input', () => {
   assert.throws(() => combineVerdicts(['probably'], 'all'), /pass, fail, or unsure/iu);
 });
 
+test('a malformed request blames the caller; a malformed response blames the judge', () => {
+  // The distinction is about fault, and it is not cosmetic: INVALID_REQUEST
+  // points an operator at their own spec and carries a different exit code.
+  // When a judge answers checks nobody asked about, the request was fine.
+  // core/adapters/subprocess.mjs already calls an adapter's protocol violation
+  // INTERNAL; this keeps the judge boundary agreeing with its own transport.
+  const codeOf = (run) => {
+    try {
+      run();
+      return 'no throw';
+    } catch (error) {
+      return error.code;
+    }
+  };
+
+  assert.equal(
+    codeOf(() => validateJudgeRequest({ protocol: 1, file: '', checks: [] })),
+    'INVALID_REQUEST',
+  );
+  assert.equal(
+    codeOf(() => parseJudgeResponse({ protocol: 1, ok: true, results: 'not an array' })),
+    'INTERNAL',
+  );
+  assert.equal(
+    codeOf(() => parseJudgeResponse(
+      { protocol: 1, ok: true, results: [] },
+      { expectedIds: [checkIdFor(NO_TEXT)] },
+    )),
+    'INTERNAL',
+  );
+});
+
+test("a judge's own error code is narrowed into the closed taxonomy", () => {
+  const parsed = parseJudgeResponse({
+    protocol: 1,
+    ok: false,
+    error: { code: 'KABOOM', message: 'vendor said so' },
+  });
+
+  assert.equal(parsed.ok, false);
+  assert.equal(parsed.error.code, 'INTERNAL', 'an unrecognised vendor code must not escape');
+  assert.equal(parsed.error.message, 'vendor said so');
+  assert.deepEqual(
+    parsed.error.details,
+    { reportedCode: 'KABOOM' },
+    'what the judge claimed is preserved rather than discarded',
+  );
+
+  const known = parseJudgeResponse({
+    protocol: 1,
+    ok: false,
+    error: { code: 'AUTH_REQUIRED', message: 'not signed in' },
+  });
+  assert.equal(known.error.code, 'AUTH_REQUIRED', 'a code already in the set passes through');
+});
+
 test('unsure never resolves to accepted', () => {
   assert.deepEqual(acceptanceFor('pass'), { accepted: true, escalate: false });
   assert.deepEqual(acceptanceFor('fail'), { accepted: false, escalate: false });
