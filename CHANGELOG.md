@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-08-13
+
+### Added
+
+- A `pixelproof` executable grouping `generate`, `verify` and `doctor`. It is a synonym for the
+  existing `scripts/*.mjs` entry points — same handlers, same process, identical flags, output
+  and exit codes — not a second dialect.
+- `pixelproof doctor`, a read-only environment report: which providers are installed, their
+  declared limits, and which mechanical checks will run versus `SKIP`. It never invokes a
+  provider and never probes authentication, so it spends no quota; credentials it cannot cheaply
+  prove are reported as `unknown / not safely probeable` rather than guessed at.
+- Internal architecture for v2: provider and judge protocols with a closed error taxonomy, a
+  generic adapter subprocess runtime that terminates process trees on timeout, vendor-neutral
+  verification and generation cores, and filesystem-derived artifact provenance. None of it
+  changes any documented v1 behaviour; it is the seam later phases build on.
+
+### Fixed
+
+- Freshness was decided by comparing two different clocks: the run start came from `Date.now()`
+  while an artifact's age came from its filesystem mtime. On Linux, where inode timestamps are
+  stamped from a coarse, tick-granular clock that lags the fine-grained one, a file written after
+  the run began could carry an earlier mtime and be rejected as stale — failing a run that had in
+  fact succeeded. The run start is now sampled from the same filesystem that stamps the artifact,
+  and the Codex recovery scan samples `$CODEX_HOME/generated_images` separately because it may
+  live on another mount.
+
 ## [0.1.2] - 2026-08-13
 
 ### Fixed

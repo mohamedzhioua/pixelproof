@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mohamedzhioua/pixelproof/schema/judge-adapter.v1.json",
+  "title": "Pixelproof judge adapter protocol v1",
+  "description": "Request and per-check result shapes for the semantic tier. A judge answers exactly the checks it was asked, one result each; a summary opinion without per-assertion verdicts is a protocol violation, not a pass.",
+  "$defs": {
+    "checkId": {
+      "type": "string",
+      "pattern": "^s-[0-9a-f]{10}(#[0-9]+)?$",
+      "description": "Derived from the assertion text, not its position, so identity survives spec composition and reordering."
+    },
+    "verdict": {
+      "enum": ["pass", "fail", "unsure"],
+      "description": "Tri-state. `unsure` is never promoted to `pass`; it escalates or fails."
+    },
+    "errorCode": {
+      "enum": [
+        "PROVIDER_UNAVAILABLE",
+        "AUTH_REQUIRED",
+        "INVALID_REQUEST",
+        "TIMEOUT",
+        "RATE_LIMITED",
+        "CONTENT_REFUSED",
+        "INTERNAL"
+      ]
+    },
+    "check": {
+      "type": "object",
+      "required": ["id", "assertion"],
+      "properties": {
+        "id": { "$ref": "#/$defs/checkId" },
+        "assertion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One independently judgeable visible condition."
+        }
+      }
+    },
+    "judgeRequest": {
+      "type": "object",
+      "required": ["protocol", "file", "checks"],
+      "properties": {
+        "protocol": { "const": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "context": { "type": ["string", "null"] },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/check" }
+        }
+      }
+    },
+    "checkResult": {
+      "type": "object",
+      "required": ["id", "verdict"],
+      "properties": {
+        "id": { "$ref": "#/$defs/checkId" },
+        "verdict": { "$ref": "#/$defs/verdict" },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "evidence": {
+          "type": ["string", "null"],
+          "description": "What was actually visible that justifies the verdict."
+        }
+      }
+    },
+    "judgeSuccess": {
+      "type": "object",
+      "required": ["protocol", "ok", "results"],
+      "properties": {
+        "protocol": { "const": 1 },
+        "ok": { "const": true },
+        "judge": { "type": "string" },
+        "results": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/checkResult" },
+          "description": "Exactly one entry per requested check. Missing or extra entries are rejected."
+        }
+      }
+    },
+    "judgeFailure": {
+      "type": "object",
+      "required": ["protocol", "ok", "error"],
+      "properties": {
+        "protocol": { "const": 1 },
+        "ok": { "const": false },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "$ref": "#/$defs/errorCode" },
+            "message": { "type": "string" },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "judgeResponse": {
+      "oneOf": [
+        { "$ref": "#/$defs/judgeSuccess" },
+        { "$ref": "#/$defs/judgeFailure" }
+      ]
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/judgeRequest" },
+    { "$ref": "#/$defs/judgeResponse" }
+  ]
+}

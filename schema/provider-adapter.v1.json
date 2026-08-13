@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mohamedzhioua/pixelproof/schema/provider-adapter.v1.json",
+  "title": "Pixelproof provider adapter protocol v1",
+  "description": "Manifest, generate request, and generate response shapes. Unknown properties are permitted everywhere so an adapter written against a later revision still interoperates with an older core; breaking changes travel in the protocol major instead.",
+  "$defs": {
+    "artifactKind": {
+      "enum": ["raster", "vector"]
+    },
+    "adapterId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+      "description": "Lowercase kebab-case. Stable across releases; it is how a spec names a provider."
+    },
+    "errorCode": {
+      "enum": [
+        "PROVIDER_UNAVAILABLE",
+        "AUTH_REQUIRED",
+        "INVALID_REQUEST",
+        "TIMEOUT",
+        "RATE_LIMITED",
+        "CONTENT_REFUSED",
+        "INTERNAL"
+      ]
+    },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "An absent bound means unconstrained, not unsupported. Providers declare only the limits they actually have.",
+      "properties": {
+        "minWidth": { "$ref": "#/$defs/positiveInteger" },
+        "maxWidth": { "$ref": "#/$defs/positiveInteger" },
+        "minHeight": { "$ref": "#/$defs/positiveInteger" },
+        "maxHeight": { "$ref": "#/$defs/positiveInteger" },
+        "dimensionMultiple": { "$ref": "#/$defs/positiveInteger" },
+        "minPixels": { "$ref": "#/$defs/positiveInteger" },
+        "maxPixels": { "$ref": "#/$defs/positiveInteger" },
+        "maxAspectRatio": { "type": "number", "exclusiveMinimum": 0 },
+        "seed": { "type": "boolean", "default": false },
+        "references": { "type": "boolean", "default": false },
+        "transparency": { "type": "boolean", "default": false },
+        "negativePrompt": { "type": "boolean", "default": false }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "required": ["protocol", "id", "kinds"],
+      "properties": {
+        "protocol": { "const": 1 },
+        "id": { "$ref": "#/$defs/adapterId" },
+        "kinds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/artifactKind" }
+        },
+        "capabilities": { "$ref": "#/$defs/capabilities" }
+      }
+    },
+    "describeRequest": {
+      "type": "object",
+      "required": ["protocol", "operation"],
+      "properties": {
+        "protocol": { "const": 1 },
+        "operation": { "const": "describe" }
+      },
+      "description": "The single handshake by which an executable adapter supplies its manifest. Bundled modules export the same manifest shape directly."
+    },
+    "generateRequest": {
+      "type": "object",
+      "required": ["protocol", "kind", "prompt", "out"],
+      "properties": {
+        "protocol": { "const": 1 },
+        "kind": { "$ref": "#/$defs/artifactKind" },
+        "prompt": { "type": "string", "minLength": 1 },
+        "negative": { "type": ["string", "null"] },
+        "width": { "$ref": "#/$defs/positiveInteger" },
+        "height": { "$ref": "#/$defs/positiveInteger" },
+        "out": { "type": "string", "minLength": 1, "description": "Absolute path the adapter must write, and only that path." },
+        "seed": { "type": ["integer", "null"] },
+        "references": { "type": "array", "items": { "type": "string" } },
+        "attempt": { "$ref": "#/$defs/positiveInteger" },
+        "priorFailures": { "type": "array", "items": { "type": "string" } },
+        "timeoutMs": { "$ref": "#/$defs/positiveInteger" },
+        "options": { "type": "object" }
+      }
+    },
+    "generateSuccess": {
+      "type": "object",
+      "required": ["protocol", "ok", "file"],
+      "properties": {
+        "protocol": { "const": 1 },
+        "ok": { "const": true },
+        "file": { "type": "string", "minLength": 1, "description": "Must equal the requested out path." },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "seed": { "type": "integer" },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "meta": { "type": "object" }
+      }
+    },
+    "generateFailure": {
+      "type": "object",
+      "required": ["protocol", "ok", "error"],
+      "properties": {
+        "protocol": { "const": 1 },
+        "ok": { "const": false },
+        "error": {
+          "type": "object",
+          "required": ["code", "message"],
+          "properties": {
+            "code": { "$ref": "#/$defs/errorCode" },
+            "message": { "type": "string" },
+            "retryable": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "generateResponse": {
+      "oneOf": [
+        { "$ref": "#/$defs/generateSuccess" },
+        { "$ref": "#/$defs/generateFailure" }
+      ]
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/manifest" },
+    { "$ref": "#/$defs/describeRequest" },
+    { "$ref": "#/$defs/generateRequest" },
+    { "$ref": "#/$defs/generateResponse" }
+  ]
+}

@@ -1,32 +1,32 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const onePixelPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
-
-function runVerifier(scriptPath, imagePath, specPath, ...extraArguments) {
-  return spawnSync(
-    process.execPath,
-    [scriptPath, '--file', imagePath, '--spec', specPath, ...extraArguments],
-    { encoding: 'utf8' },
-  );
-}
+import {
+  isolateVerifier,
+  removeTemporaryDirectory,
+  runScript,
+  temporaryDirectory,
+  writePng,
+} from './helpers/compat-harness.mjs';
 
 test('makes skipped checks legible and strict-mode failures machine-readable', async () => {
-  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), 'pixelproof-no-sharp-'));
-  const isolatedVerifier = path.join(temporaryDirectory, 'verify.mjs');
-  const imagePath = path.join(temporaryDirectory, 'probe.png');
-  const specPath = path.join(temporaryDirectory, 'spec.json');
-
+  // The temp root comes from the harness, which returns a *realpath*. On macOS
+  // `os.tmpdir()` is `/var/folders/...`, a symlink to `/private/var/folders/...`,
+  // and a tree built under the unresolved path is not reliably the tree the
+  // spawned Node resolves and runs — this test used to hand-roll `mkdtemp` and
+  // produced empty stdout on every macOS runner while passing on Linux and
+  // Windows. Isolation likewise goes through `isolateVerifier()` rather than a
+  // second copy of the copy logic: one mechanism, exercised by every test that
+  // needs it, cannot drift into a per-file variant that only fails on one OS.
+  const root = await temporaryDirectory('pixelproof-no-sharp-');
   try {
+    const imagePath = path.join(root, 'probe.png');
+    const specPath = path.join(root, 'spec.json');
+    const isolatedVerifier = await isolateVerifier(root);
     await Promise.all([
-      copyFile(path.join(repositoryRoot, 'scripts', 'verify.mjs'), isolatedVerifier),
-      writeFile(imagePath, Buffer.from(onePixelPng, 'base64')),
+      writePng(imagePath, 1, 1),
       writeFile(specPath, JSON.stringify({
         mechanical: {
           width: 1,
@@ -37,23 +37,24 @@ test('makes skipped checks legible and strict-mode failures machine-readable', a
         },
       })),
     ]);
+    const arguments_ = ['--file', imagePath, '--spec', specPath];
 
-    const defaultResult = runVerifier(isolatedVerifier, imagePath, specPath);
-    assert.equal(defaultResult.status, 0);
+    const defaultResult = runScript(isolatedVerifier, arguments_);
+    assert.equal(defaultResult.status, 0, defaultResult.stderr);
     assert.match(
       defaultResult.stdout,
       /Mechanical verification: PASS \(2 checks SKIPPED - not verified\)/,
     );
 
-    const strictResult = runVerifier(isolatedVerifier, imagePath, specPath, '--strict');
-    assert.equal(strictResult.status, 1);
+    const strictResult = runScript(isolatedVerifier, [...arguments_, '--strict']);
+    assert.equal(strictResult.status, 1, strictResult.stderr);
     assert.match(
       strictResult.stdout,
       /Mechanical verification: FAIL \(2 checks SKIPPED - not verified\)/,
     );
 
-    const jsonResult = runVerifier(isolatedVerifier, imagePath, specPath, '--strict', '--json');
-    assert.equal(jsonResult.status, 1);
+    const jsonResult = runScript(isolatedVerifier, [...arguments_, '--strict', '--json']);
+    assert.equal(jsonResult.status, 1, jsonResult.stderr);
     const parsed = JSON.parse(jsonResult.stdout);
     assert.deepEqual(
       {
@@ -66,6 +67,6 @@ test('makes skipped checks legible and strict-mode failures machine-readable', a
       { passed: 3, failed: 0, skipped: 2, strict: true, ok: false },
     );
   } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
+    await removeTemporaryDirectory(root);
   }
 });

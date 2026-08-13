@@ -8,17 +8,39 @@ on:
 
 jobs:
   test:
-    name: Node ${{ matrix.node }} / ${{ matrix.os }}
+    name: Node ${{ matrix.node }} / ${{ matrix.os }} / ${{ matrix.deps.lane }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # The suite runs serially and spawns child processes; keep headroom so a slow
+    # runner fails on a real defect rather than on the clock.
+    timeout-minutes: 30
     strategy:
+      # Every cell is an independent compatibility claim. One red cell must not
+      # cancel the others, or the matrix stops telling us where the break is.
+      fail-fast: false
       matrix:
         os:
           - ubuntu-latest
+          - macos-latest
           - windows-latest
         node:
           - 22
           - 24
+        deps:
+          # Full install: `sharp` is present, so the raster path is exercised.
+          - lane: full
+            install: npm ci
+            expectSharp: 'true'
+          # Degraded install: `sharp` is absent, so the fallback path is
+          # exercised. This lane is the whole point of the optional dependency.
+          - lane: no-optional
+            install: npm ci --omit=optional
+            expectSharp: 'false'
+
+    defaults:
+      run:
+        # Use one shell everywhere so the lane assertion below behaves
+        # identically on Windows as it does on Ubuntu and macOS.
+        shell: bash
 
     steps:
       - name: Check out repository
@@ -30,8 +52,66 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install dependencies (${{ matrix.deps.lane }})
+        run: ${{ matrix.deps.install }}
+
+      # Do not infer the lane from npm exiting zero. `npm ci --omit=optional`
+      # succeeds whether or not sharp ended up installed, so a lane that quietly
+      # kept sharp would leave the degraded path untested while reporting green.
+      # Prove the state by importing.
+      - name: Assert optional-dependency lane state
+        env:
+          LANE: ${{ matrix.deps.lane }}
+          EXPECT_SHARP: ${{ matrix.deps.expectSharp }}
+        run: |
+          node --input-type=module -e '
+            const expectSharp = process.env.EXPECT_SHARP === "true";
+            let sharp = null;
+            let loaded = false;
+            let detail = "";
+
+            try {
+              const mod = await import("sharp");
+              sharp = mod.default ?? mod;
+              loaded = true;
+              detail = "sharp imported";
+            } catch (error) {
+              const code = error && error.code ? error.code : "no-code";
+              const message = error && error.message ? error.message : String(error);
+              detail = "sharp did not import (" + code + "): " + message.split("\n")[0];
+            }
+
+            console.log("lane=" + process.env.LANE + " expect-sharp=" + expectSharp + " sharp-loaded=" + loaded);
+            console.log(detail);
+
+            if (loaded !== expectSharp) {
+              console.error(
+                "Lane state mismatch: expected sharp to be " +
+                  (expectSharp ? "present" : "absent") +
+                  " but it was " +
+                  (loaded ? "present" : "absent") +
+                  "."
+              );
+              process.exit(1);
+            }
+
+            if (loaded) {
+              // Importing sharp loads its native binding, but exercise one real
+              // operation so a half-installed binary cannot pass as present.
+              const buffer = await sharp({
+                create: { width: 8, height: 8, channels: 3, background: { r: 0, g: 0, b: 0 } },
+              })
+                .png()
+                .toBuffer();
+
+              if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+                console.error("sharp imported but produced no output; the lane is not truly full.");
+                process.exit(1);
+              }
+
+              console.log("sharp smoke encode produced " + buffer.length + " bytes");
+            }
+          '
 
       - name: Run tests
         run: npm test

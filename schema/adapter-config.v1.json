@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mohamedzhioua/pixelproof/schema/adapter-config.v1.json",
+  "title": "Pixelproof adapter registration v1",
+  "description": "How a project declares adapters that are not bundled with Pixelproof. Bundled adapters need no entry here: they are trusted and discovered from the repository (ADR 0004). Anything registered through this file runs out of process.",
+  "type": "object",
+  "required": ["protocol"],
+  "properties": {
+    "protocol": { "const": 1 },
+    "providers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/executableAdapter" }
+    },
+    "judges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/executableAdapter" }
+    }
+  },
+  "$defs": {
+    "executableAdapter": {
+      "type": "object",
+      "required": ["id", "command"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "description": "Must be unique across all adapters of its kind. Duplicate ids are a hard error rather than a last-one-wins race."
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Executable path or bare name resolved on PATH. Never passed to a shell: it is argv[0], so no quoting or metacharacter interpretation applies."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Fixed leading arguments. The protocol request itself arrives on stdin, not as an argument."
+        },
+        "trust": {
+          "const": "external",
+          "default": "external",
+          "description": "Only `external` is accepted here. In-process trust is not grantable by configuration, because a config file that could grant it would be an arbitrary-code-execution vector (ADR 0004)."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Deadline for a single operation. On expiry the whole process tree is terminated, not just the direct child."
+        },
+        "env": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Allowlist of environment variable names to forward. The adapter otherwise receives a minimal environment; secrets are not passed implicitly."
+        },
+        "capabilities": {
+          "$ref": "https://github.com/mohamedzhioua/pixelproof/schema/provider-adapter.v1.json#/$defs/capabilities",
+          "description": "Optional static declaration used only when the adapter does not answer the `describe` handshake. The handshake is the primary mechanism; this exists so a trivial script need not implement it."
+        }
+      }
+    }
+  }
+}
