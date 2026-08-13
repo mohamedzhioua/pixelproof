@@ -78,8 +78,12 @@ export function serialiseJson(value) {
  * Write via a temp file in the same directory, then rename over the target.
  * Same-directory keeps the rename on one filesystem, which is what makes it
  * atomic; `rename` replaces an existing file on both POSIX and Windows.
+ *
+ * Exported so ADR 0009's round files are written the same way, from one
+ * implementation. Evidence that a `Ctrl-C` can truncate is not evidence, and
+ * that has to be true of every file in the directory, not just of `run.json`.
  */
-async function writeAtomic(file, contents) {
+export async function writeAtomic(file, contents) {
   const temporary = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}-${randomUUID()}`);
   try {
     await writeFile(temporary, contents);
@@ -428,6 +432,92 @@ export async function recordAttempt(directory, {
   }));
 
   return { run, attempt: attemptDocument, files: { attempt: attemptFile } };
+}
+
+/**
+ * Merge reserved top-level fields into `run.json`, and optionally append a
+ * reason and notes, without touching `state`.
+ *
+ * This is how ADR 0009 writes the `judge` and `rounds` keys that ADR 0014 §5
+ * reserves for it, and how `judge submit` records a named refusal on a run that
+ * stays open. Two guarantees survive:
+ *
+ * - **Owned keys are refused.** `state` and `accepted` in particular are not
+ *   settable from here, so the module's rule that every state change goes
+ *   through `state.mjs` is still impossible to express a way around rather than
+ *   merely discouraged.
+ * - **A closed run is not appended to.** A terminal run's directory is a record
+ *   of what happened; writing into it afterwards would make the report describe
+ *   something else.
+ *
+ * @param {string} directory
+ * @param {{fields?: object, reason?: {code: string, message?: string}|null, notes?: string[]}} update
+ * @param {{now?: Date}} [options]
+ */
+export async function recordRunFields(directory, { fields = {}, reason = null, notes = [] } = {}, { now } = {}) {
+  if (!isPlainObject(fields)) throw new TypeError('recordRunFields requires an object of fields');
+
+  const owned = Object.keys(fields).filter((key) => OWNED_RUN_KEYS.has(key));
+  if (owned.length > 0) {
+    throw new RunError('RUN_STATE_TRANSITION_REFUSED', `Refusing to set run-owned fields from outside the store: ${owned.join(', ')}`, {
+      details: { fields: owned },
+    });
+  }
+
+  const at = nowIso(now);
+  return updateRun(directory, (document) => {
+    assertOpen(document.state, 'record run fields');
+    return runDocument({
+      runId: document.runId,
+      state: document.state,
+      createdAt: document.createdAt,
+      updatedAt: at,
+      pixelproofVersion: document.pixelproofVersion ?? null,
+      command: document.command ?? null,
+      resolved: document.resolved ?? {},
+      attempts: document.attempts ?? [],
+      outcome: document.outcome ?? null,
+      reasons: withReason(document.reasons ?? [], reason?.code ?? null, reason?.message, at),
+      notes: [...(document.notes ?? []), ...notes],
+      extra: { ...unownedKeys(document), ...fields },
+    });
+  });
+}
+
+/**
+ * Record the semantic verdicts on an already-written attempt.
+ *
+ * `attempt-<n>.json` carries the mechanical table *and* the semantic verdicts
+ * (ADR 0009 §2), but the two are produced at different times: the mechanical
+ * table exists before the host is asked anything, and the verdicts arrive with a
+ * submission that may be a day later. The attempt is not re-recorded — the
+ * artifact and its digest describe the same bytes either way, and rewriting the
+ * whole record would risk the hash and the file drifting apart.
+ */
+export async function recordAttemptSemantic(directory, number, semantic, { now } = {}) {
+  const resolved = path.resolve(directory);
+  const current = await readRun(resolved);
+  assertOpen(current.state, 'record semantic verdicts');
+
+  const file = path.join(resolved, `${attemptStem(number)}.json`);
+
+  let document;
+  try {
+    document = JSON.parse(await readFile(file, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+      throw new RunError('RUN_NOT_FOUND', `No ${attemptStem(number)}.json in ${resolved}`, {
+        details: { directory: resolved, file, number },
+        cause: error,
+      });
+    }
+    throw error;
+  }
+
+  assertSchema(document, ATTEMPT_SCHEMA, { file });
+  const next = { ...document, semantic, semanticRecordedAt: nowIso(now) };
+  await writeAtomic(file, serialiseJson(next));
+  return next;
 }
 
 /** Append a named reason to the run record. Codes are stable; prose is not. */

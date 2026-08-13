@@ -54,10 +54,15 @@ Provider selection:
 `;
 
 /**
- * `--svg-file` becomes `svgFile`; `--file` stays `file`. Only the generator ever
- * had a dashed option, so only it asks for the conversion — applying it
- * unconditionally would be harmless today but would silently rename a future
- * verifier flag.
+ * `--svg-file` becomes `svgFile`; `--file` stays `file`.
+ *
+ * This used to be generator-only, on the reasoning that applying it
+ * unconditionally "would be harmless today but would silently rename a future
+ * verifier flag". ADR 0009 is that future: `--judge-deadline` and `--run-dir`
+ * land on both commands, and a verifier option keyed `judge-deadline` while the
+ * generator's is `judgeDeadline` would be exactly the two-dialects problem ADR
+ * 0003 forbids. Every v1 verifier flag is a single word, so turning it on
+ * renames nothing that already exists.
  */
 function optionKey(argument, camelCase) {
   const name = argument.slice(2);
@@ -98,7 +103,24 @@ const VERIFY_FLAGS = new Map([
   ['--help', 'help'],
 ]);
 
-const VERIFY_VALUED = new Set(['--file', '--spec']);
+/**
+ * ADR 0009's options are accepted by both commands but appear in **neither
+ * banner**, and that is deliberate rather than an oversight.
+ *
+ * ADR 0003 freezes the v1 prose: "human-readable prose may change only where it
+ * reports a newly detected safety failure", and ADR 0009 promises that without
+ * `--judge` the behaviour is byte-identical to today — `--help` included. The
+ * banners still say `node scripts/verify.mjs` for the same reason: these
+ * commands are synonyms for the legacy scripts, not a new dialect.
+ *
+ * `--judge` is documented on new surface instead: `pixelproof judge --help`, the
+ * top-level banner, `pixelproof doctor`, and the README. Listing it here as well
+ * needs an amendment to ADR 0003, which is the maintainer's call and not this
+ * slice's to take.
+ */
+const JUDGE_VALUED = Object.freeze(['--judge', '--judge-deadline', '--run-dir']);
+
+const VERIFY_VALUED = new Set(['--file', '--spec', ...JUDGE_VALUED]);
 
 const GENERATE_FLAGS = new Map([
   ['-h', 'help'],
@@ -112,6 +134,7 @@ const GENERATE_VALUED = new Set([
   '--size',
   '--spec',
   '--svg-file',
+  ...JUDGE_VALUED,
 ]);
 
 /** Parse verifier arguments. Throws on an unknown argument or a missing value. */
@@ -120,6 +143,7 @@ export function parseVerifyArguments(argv) {
     flags: VERIFY_FLAGS,
     valued: VERIFY_VALUED,
     defaults: { json: false, strict: false, help: false },
+    camelCase: true,
   });
 }
 

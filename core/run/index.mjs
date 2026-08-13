@@ -66,7 +66,10 @@ export {
   readReport,
   readRun,
   recordAttempt,
+  recordAttemptSemantic,
+  recordRunFields,
   runFilePath,
   serialiseJson,
   transitionRun,
+  writeAtomic,
 } from './store.mjs';

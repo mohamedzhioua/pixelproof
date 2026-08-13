@@ -39,6 +39,12 @@ import {
   printUsageError,
 } from '../format-errors.mjs';
 import { printVerificationResult, printWarning } from '../format-verification.mjs';
+import {
+  attemptTarget,
+  completeJudgedRun,
+  openJudgedRun,
+  resolveJudgeOptions,
+} from '../judged-run.mjs';
 import { assertCodexSize, generateWithCodex } from '../../../providers/codex.mjs';
 import { generateWithSvg } from '../../../providers/svg.mjs';
 import { verifyImage } from './verify.mjs';
@@ -169,14 +175,30 @@ export async function runGenerate(argv) {
         ? specFromSize(requestedSize)
         : null;
 
+    // Validated before a provider is invoked, so a target the host cannot judge
+    // never costs a generation.
+    const judged = resolveJudgeOptions(options, { artifact: options.out, spec });
+
+    // Under `--judge`, the artifact is generated into the run directory and
+    // appears at `--out` only when the run is accepted (ADR 0009 §2).
+    const opened = judged === null ? null : await openJudgedRun({
+      command: 'generate',
+      runDir: options.runDir ?? null,
+      out: options.out,
+      specPath,
+      provider,
+      judge: judged.judge,
+    });
+    const outPath = opened === null ? options.out : attemptTarget(opened.directory, options.out);
+
     const { generate, request } = await prepareGeneration({
       provider,
-      options,
+      options: { ...options, out: outPath },
       dimensions,
       verificationSpec,
     });
 
-    const { ok } = await runOnce({
+    const { ok, verification } = await runOnce({
       generate,
       request,
       onGenerated(generation) {
@@ -207,7 +229,21 @@ export async function runGenerate(argv) {
         : null,
     });
 
-    return ok ? 0 : 1;
+    if (opened === null) return ok ? 0 : 1;
+
+    return completeJudgedRun(opened.directory, {
+      run: opened.run,
+      artifactPath: outPath,
+      // Already inside the run directory: copying it onto itself would only
+      // create a second name for the same bytes.
+      copy: false,
+      verification,
+      spec,
+      specPath,
+      assertions: judged.assertions,
+      deadlineMs: judged.deadlineMs,
+      out: options.out,
+    });
   } catch (error) {
     printGenerationError(error);
     return 1;

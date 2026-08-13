@@ -36,6 +36,7 @@ import {
   printVerificationJson,
   printVerificationResult,
 } from '../format-verification.mjs';
+import { completeJudgedRun, openJudgedRun, resolveJudgeOptions } from '../judged-run.mjs';
 
 /**
  * `loadDecoder` exists so a caller can exercise the degraded path without
@@ -104,6 +105,11 @@ export async function runVerify(argv) {
     if (options.spec) {
       spec = JSON.parse(await readFile(path.resolve(options.spec), 'utf8'));
     }
+
+    // Validated before the image is opened, so a target the host cannot judge
+    // fails on the flag rather than after the work.
+    const judged = resolveJudgeOptions(options, { artifact: options.file, spec });
+
     const result = await verifyImage({
       filePath: options.file,
       spec,
@@ -115,7 +121,29 @@ export async function runVerify(argv) {
     } else {
       printVerificationResult(result);
     }
-    return result.ok ? 0 : 1;
+
+    if (judged === null) return result.ok ? 0 : 1;
+
+    // `verify` has no `--out`, so there is nothing to promote on acceptance;
+    // the run directory holds the copy the host was asked about.
+    const opened = await openJudgedRun({
+      command: 'verify',
+      runDir: options.runDir ?? null,
+      specPath: options.spec ?? null,
+      strict: options.strict,
+      judge: judged.judge,
+    });
+
+    return completeJudgedRun(opened.directory, {
+      run: opened.run,
+      artifactPath: options.file,
+      copy: true,
+      verification: result,
+      spec,
+      specPath: options.spec ?? null,
+      assertions: judged.assertions,
+      deadlineMs: judged.deadlineMs,
+    });
   } catch (error) {
     printVerificationError(error, { json: options.json, strict: options.strict });
     return 1;

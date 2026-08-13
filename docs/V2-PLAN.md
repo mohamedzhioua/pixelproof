@@ -105,6 +105,10 @@ shown.
    waiting for the child process and cannot inspect the image or write the verdict. `host` is
    not a normal synchronous adapter. It needs a two-step protocol: emit a pending checklist and
    exit with a distinct status, then let the host submit verdicts and resume/finalize the run.
+   **Resolved by [ADR 0009](./adr/0009-host-judge-handoff.md):** `--judge host` exits `2`
+   (`PENDING_JUDGEMENT`) after writing `judge-request-<round>.json`, and `pixelproof judge submit`
+   records the verdicts and finalizes the run in a second, separate invocation. Core never waits
+   on a file.
 
 3. **The trust model contradicts the adapter contract.** A dynamically imported `.mjs` module
    executes with the Pixelproof process's full authority; it is not an untrusted subprocess.

@@ -42,6 +42,7 @@
  *   }>>,
  *   decoder?: () => Promise<{ sharp: unknown|null, error?: unknown }>,
  *   auth?: (row) => Promise<{ state, detail? }> | { state, detail? },
+ *   pending?: () => Promise<Array<{ record: object|null, error: object|null }>>,
  *   output?: Console,     // console-like sink; defaults to the real console
  *   timeoutMs?: number,   // default probe budget; --timeout overrides it
  * }
@@ -52,6 +53,7 @@
  * fast-path-only imitation of it.
  */
 
+import { hasExpired, listPendingRuns } from '../../../core/judge/index.mjs';
 import { loadSharpDecoder } from '../../../core/verification/inspect.mjs';
 import { printUsage, printUsageError } from '../format-errors.mjs';
 import { parseArguments } from '../parse.mjs';
@@ -416,6 +418,34 @@ async function collectDecoder({ probe, timeoutMs }) {
 }
 
 /**
+ * Count what is still waiting on a host (ADR 0009 §4).
+ *
+ * This is the one line that makes an abandoned handoff visible to someone who
+ * never knew one happened — a run left pending by a crashed agent is invisible
+ * everywhere else, and an invisible outstanding judgement reads as "nothing to
+ * do". Scanning `run.json` files is read-only, spends nothing, and is bounded by
+ * the same probe budget as everything else here.
+ *
+ * A probe that fails reports zero *and says so*. Silently reporting zero would
+ * be the confident-wrong answer this command exists not to give.
+ */
+async function collectPending({ probe, timeoutMs }) {
+  const answer = await boundedProbe(probe, timeoutMs, 'the pending-judgement scan');
+  if (!answer.ok) {
+    return { total: 0, expired: 0, unreadable: 0, error: answer.error };
+  }
+
+  const now = new Date();
+  const entries = Array.isArray(answer.value) ? answer.value : [];
+  return {
+    total: entries.length,
+    expired: entries.filter((entry) => entry.record !== null && hasExpired(entry.record.expiresAt, now)).length,
+    unreadable: entries.filter((entry) => entry.error !== null).length,
+    error: null,
+  };
+}
+
+/**
  * Assemble the whole report as data. Rendering is a separate step so `--json`
  * and the human report cannot disagree about what was found.
  */
@@ -423,9 +453,11 @@ export async function collectReport({ probes = undefined, timeoutMs = DEFAULT_PR
   const providerProbe = probes?.providers ?? (() => defaultProviderProbe(timeoutMs));
   const decoderProbe = probes?.decoder ?? loadSharpDecoder;
   const authProbe = probes?.auth ?? defaultAuthProbe;
+  const pendingProbe = probes?.pending ?? (() => listPendingRuns());
 
   const providers = await collectProviders({ probe: providerProbe, authProbe, timeoutMs });
   const decoder = await collectDecoder({ probe: decoderProbe, timeoutMs });
+  const pending = await collectPending({ probe: pendingProbe, timeoutMs });
 
   const availableIds = providers.rows.filter((row) => row.available).map((row) => row.id);
   const ok = availableIds.length > 0;
@@ -438,6 +470,7 @@ export async function collectReport({ probes = undefined, timeoutMs = DEFAULT_PR
     providers: providers.rows,
     providerProbeError: providers.error,
     decoder,
+    pending,
     summary: {
       providersAvailable: availableIds.length,
       providersTotal: providers.rows.length,
@@ -458,6 +491,24 @@ function field(label, value) {
 
 function continuation(value) {
   return `    ${' '.repeat(LABEL_WIDTH)}${value}`;
+}
+
+/**
+ * `2 pending host judgements (1 expired)` — ADR 0009 §4's one line.
+ *
+ * A failed scan says it failed rather than reporting none. "None outstanding"
+ * and "I could not look" are different facts, and only one of them means there
+ * is nothing to do.
+ */
+export function describePending(pending) {
+  if (!pending) return 'not scanned';
+  if (pending.error) return `could not scan (${pending.error})`;
+  if (pending.total === 0) return 'none pending';
+
+  const noun = pending.total === 1 ? 'judgement' : 'judgements';
+  const unreadable = pending.unreadable > 0 ? `, ${pending.unreadable} unreadable` : '';
+  return `${pending.total} pending host ${noun} (${pending.expired} expired${unreadable})`
+    + ' - pixelproof judge pending';
 }
 
 /**
@@ -536,6 +587,7 @@ export function renderReport(report) {
       ? 'full - every mechanical check can run'
       : `degraded - ${CHECKS_REQUIRING_DECODER.join(' and ')} will report SKIP, not PASS`,
   ));
+  lines.push(field('judgements', describePending(report.pending)));
   lines.push(field('verdict', report.summary.verdict));
 
   return `${lines.join('\n')}\n`;

@@ -4,6 +4,64 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **The host judge handoff** (ADR 0009). `--judge host` on `generate` and `verify` writes a
+  machine-readable checklist, records the artifact and its mechanical result in a run
+  directory, and **exits 2** — an outstanding judgement, never a pass. The calling agent then
+  opens the artifact with its own vision capability and answers with `pixelproof judge
+  submit`. This replaces the shape the brief originally specified, which deadlocked: the only
+  entity that can open the image is the agent blocked on the child process, so it could never
+  write the file core was waiting for.
+- `pixelproof judge` with four sub-verbs: `pending` (open judgements, exits `2` while any
+  exist so it works as a CI gate), `show` (the checklist, or `--request` for the bare
+  protocol-1 request), `submit` (`--results <path>`, `--results -`, or `--interactive`, which
+  refuses a non-TTY rather than hanging a pipeline), and `abandon` (close a run as rejected,
+  on the record).
+- **Identity by nonce, not by digest.** Each pending record carries a single-use 32-byte
+  nonce, and a submission must echo `runId`, `nonce` and `checksDigest`. Two concurrent runs
+  of the same spec over the same image compute identical digests, so content cannot say whose
+  pending record is whose — the same hole ADR 0008 closed for artifact recovery. Nine named
+  refusals (`PENDING_ID_MALFORMED`, `PENDING_FOREIGN_ROOT`, `PENDING_NOT_FOUND`,
+  `PENDING_NOT_OPEN`, `PENDING_SCHEMA_UNSUPPORTED`, `PENDING_NONCE_MISMATCH`,
+  `PENDING_CHECKS_MISMATCH`, `PENDING_EXPIRED`, `ARTIFACT_CHANGED`) are recorded in `run.json`
+  and printed by the report.
+- **Promotion on acceptance only.** Under `--judge`, the generator writes into the run
+  directory and the artifact appears at `--out` when the run is accepted. A rejected or
+  abandoned run leaves no file where a caller would look for one — the mechanical form of "an
+  unanswered checklist is not a pass". The candidate stays in the run directory and is named
+  in the report.
+- **Escalation as a further pending round.** An `unsure` verdict re-asks only the still-unsure
+  assertions, with `unsure` forced to resolve as `fail` that round; the round-2 verdict
+  *replaces* the round-1 one rather than joining the panel, which is what makes escalation
+  resolve anything under the default `all` policy. Rounds are bounded at two.
+- Deadlines: `--judge-deadline`, default 24 hours. A unit is required — a bare number is
+  refused rather than read as seconds or milliseconds, which differ by a thousandfold.
+- `--run-dir` and `PIXELPROOF_RUN_ROOT` to place the run root on a retained path.
+- `pixelproof doctor` gains one line — `N pending host judgements (M expired)` — so an
+  abandoned handoff is visible to someone who never knew one happened. A failed scan says so
+  rather than reporting none.
+- `schema/judge-pending.v1.json` and `schema/judge-result.v1.json`, the two envelopes a
+  consumer outside this repository reads and writes.
+
+### Changed
+
+- `skills/image/SKILL.md` step 6 is host-neutral: it said "use Claude Code's Read tool", and
+  now says to open the artifact with whatever image-reading capability the host has, with the
+  two-step `--judge host` flow documented alongside. The same instruction serves the Codex and
+  Gemini bundles.
+- `pixelproof verify` now camel-cases dashed option keys, as `generate` already did. Every v1
+  verifier flag is a single word, so nothing existing is renamed.
+
+### Unchanged
+
+- Without `--judge`, behaviour is byte-identical: same flags, output, exit codes, and no run
+  directory is created. The frozen v1 banners do not grow a flag (ADR 0003 permits prose
+  changes only to report a new safety failure), so `--judge` is documented on new surface —
+  the top-level banner, `pixelproof judge --help`, `doctor`, and the README.
+
 ## [0.2.1] - 2026-08-13
 
 ### Fixed

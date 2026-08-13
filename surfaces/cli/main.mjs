@@ -15,11 +15,17 @@
  * The subcommands are synonyms for the legacy scripts, not a new dialect: their
  * flags, text and exit codes are the frozen v1 surface (ADR 0003). Only the
  * top-level banner below is new, because v1 had no top level.
+ *
+ * ADR 0009 adds one exit code to the vocabulary, on new surface only:
+ * **`2` is `PENDING_JUDGEMENT` — a checklist was written and no verdict exists
+ * yet.** It is never a pass. The normaliser below passes an integer `2` through
+ * unchanged, so every gate already written as "non-zero is failure" fails closed
+ * on a pending run without knowing the code exists. Nothing reachable without
+ * `--judge` can return it, so v1's two-code surface is untouched.
  */
 
-import { readFile } from 'node:fs/promises';
-
 import { printUsage, printUsageError } from './format-errors.mjs';
+import { readVersion } from './version.mjs';
 
 /**
  * The command registry: name -> { summary, load }.
@@ -44,6 +50,10 @@ export const COMMANDS = new Map([
     load: () => import('./commands/doctor.mjs')
       .then((module) => (argv) => module.doctorCommand({ argv })),
   }],
+  ['judge', {
+    summary: 'List, show, answer or close a pending host judgement',
+    load: () => import('./commands/judge.mjs').then((module) => module.runJudge),
+  }],
 ]);
 
 /** The command names, in registry order — what the help and errors list. */
@@ -51,12 +61,8 @@ export function commandNames() {
   return [...COMMANDS.keys()];
 }
 
-/** Read the version from the manifest; never hardcode it in a second place. */
-export async function readVersion() {
-  const manifestUrl = new URL('../../package.json', import.meta.url);
-  const manifest = JSON.parse(await readFile(manifestUrl, 'utf8'));
-  return manifest.version;
-}
+/** Re-exported so `pixelproof --version` and the pending record agree (ADR 0009 §2). */
+export { readVersion };
 
 /** The top-level banner, with the command list derived from the registry. */
 export function mainUsage() {
@@ -77,8 +83,19 @@ Options:
   -h, --help          Show this help
   -v, --version       Show the version
 
-Run \`pixelproof <command> --help\` for a command's options. The subcommands are
-identical to the legacy \`node scripts/<command>.mjs\` entry points.
+Run \`pixelproof <command> --help\` for a command's options. \`generate\`, \`verify\`
+and \`doctor\` are identical to the legacy \`node scripts/<command>.mjs\` entry
+points; their banners are frozen, so the two options below are documented here.
+
+Host judgement (ADR 0009):
+  --judge host              Ask the calling agent to judge the spec's "semantic"
+                            assertions. Accepted by generate and verify.
+  --judge-deadline <dur>    How long the checklist stays answerable (default 24h).
+  --run-dir <path>          Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
+
+With \`--judge host\` the artifact is written into the run directory and appears
+at \`--out\` only once the run is accepted. The command exits **2**, which means an
+outstanding judgement and is never a pass. Answer it with \`pixelproof judge\`.
 `;
 }
 
