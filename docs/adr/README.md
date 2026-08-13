@@ -13,6 +13,7 @@ the decision state, not implementation progress.
 | [0006 — Protocol validation and error taxonomy](./0006-protocol-validation-and-error-taxonomy.md) | Mechanical | Accepted |
 | [0007 — Subprocess lifecycle and resource limits](./0007-subprocess-lifecycle-and-resource-limits.md) | Mechanical | Accepted |
 | [0008 — Artifact provenance and freshness](./0008-artifact-provenance-and-freshness.md) | User-Challenge | Accepted |
+| [0009 — Host judge handoff](./0009-host-judge-handoff.md) | User-Challenge | Proposed |
 | [0010 — Check identity, tri-state, and consensus](./0010-check-identity-tri-state-and-consensus.md) | Mechanical | Accepted |
 | [0011 — Acceptance versus scoring](./0011-acceptance-versus-scoring.md) | User-Challenge | Accepted |
 | [0013 — Pixel engine, color science, and heuristic status](./0013-pixel-engine-color-science-and-heuristic-status.md) | User-Challenge | Deferred |
