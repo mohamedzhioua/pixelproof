@@ -10,7 +10,7 @@
  * from "it is fine", and collapsing them would reintroduce the failure mode.
  */
 
-import { AdapterError } from './errors.mjs';
+import { AdapterError, normalizeErrorPayload } from './errors.mjs';
 import { isCheckId } from './check-id.mjs';
 import { PROTOCOL_VERSION } from './provider.mjs';
 
@@ -20,13 +20,32 @@ export const UNSURE_POLICIES = Object.freeze(['escalate', 'fail']);
 
 const VERDICT_SET = new Set(VERDICTS);
 
+/**
+ * A malformed *request*: the caller asked for something impossible.
+ * `INVALID_REQUEST` is aimed at whoever built the request.
+ */
 function invalid(message, details) {
   return new AdapterError('INVALID_REQUEST', message, { retryable: false, details: details ?? null });
 }
 
-function requirePlainObject(value, label) {
+/**
+ * A malformed *response*: the judge broke the protocol.
+ *
+ * This is `INTERNAL`, not `INVALID_REQUEST`, and the distinction is about who
+ * is at fault. When a judge answers checks nobody asked about, the caller's
+ * request was fine — blaming it points the operator at the wrong thing, and
+ * `INVALID_REQUEST` additionally carries a different exit code.
+ * `core/adapters/subprocess.mjs` already treats an adapter's protocol violation
+ * as `INTERNAL`; this makes the judge boundary agree with the transport it runs
+ * over instead of contradicting it.
+ */
+function violation(message, details) {
+  return new AdapterError('INTERNAL', message, { retryable: false, details: details ?? null });
+}
+
+function requirePlainObject(value, label, fault = invalid) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw invalid(`${label} must be a JSON object`);
+    throw fault(`${label} must be a JSON object`);
   }
   return value;
 }
@@ -75,34 +94,41 @@ export function validateJudgeRequest(raw) {
  * silently treated as complete is indistinguishable from a pass.
  */
 export function parseJudgeResponse(raw, { expectedIds } = {}) {
-  const response = requirePlainObject(raw, 'Judge response');
+  const response = requirePlainObject(raw, 'Judge response', violation);
   if (response.protocol !== PROTOCOL_VERSION) {
-    throw invalid(
+    throw violation(
       `Judge response declares protocol ${JSON.stringify(response.protocol ?? null)}, but this build speaks protocol ${PROTOCOL_VERSION}`,
     );
   }
 
   if (response.ok === false) {
-    return { ok: false, error: requirePlainObject(response.error, 'Judge response error') };
+    // Narrow the judge's own code into the closed taxonomy, exactly as the
+    // subprocess transport does. Handing back an unvalidated vendor code lets a
+    // careless caller propagate a string nobody downstream has to handle.
+    const reported = requirePlainObject(response.error, 'Judge response error', violation);
+    return {
+      ok: false,
+      error: normalizeErrorPayload(reported, { fallbackMessage: 'Judge reported a failure' }),
+    };
   }
   if (response.ok !== true) {
-    throw invalid('Judge response ok must be a boolean');
+    throw violation('Judge response ok must be a boolean');
   }
   if (!Array.isArray(response.results)) {
-    throw invalid('Judge response results must be an array');
+    throw violation('Judge response results must be an array');
   }
 
   const byId = new Map();
   for (const entry of response.results) {
-    const result = requirePlainObject(entry, 'Judge result');
+    const result = requirePlainObject(entry, 'Judge result', violation);
     if (!isCheckId(result.id)) {
-      throw invalid('Judge result id is not a well-formed check identity', { id: result.id ?? null });
+      throw violation('Judge result id is not a well-formed check identity', { id: result.id ?? null });
     }
     if (byId.has(result.id)) {
-      throw invalid('Judge returned duplicate results for one check', { id: result.id });
+      throw violation('Judge returned duplicate results for one check', { id: result.id });
     }
     if (!VERDICT_SET.has(result.verdict)) {
-      throw invalid(
+      throw violation(
         `Judge result ${result.id} verdict must be one of ${VERDICTS.join(', ')}`,
         { verdict: result.verdict ?? null },
       );
@@ -110,7 +136,7 @@ export function parseJudgeResponse(raw, { expectedIds } = {}) {
     const confidence = result.confidence;
     if (confidence !== undefined && confidence !== null) {
       if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-        throw invalid(`Judge result ${result.id} confidence must be a number in [0, 1]`, { confidence });
+        throw violation(`Judge result ${result.id} confidence must be a number in [0, 1]`, { confidence });
       }
     }
     byId.set(result.id, {
@@ -126,7 +152,7 @@ export function parseJudgeResponse(raw, { expectedIds } = {}) {
     const missing = [...expected].filter((id) => !byId.has(id));
     const unexpected = [...byId.keys()].filter((id) => !expected.has(id));
     if (missing.length > 0 || unexpected.length > 0) {
-      throw invalid('Judge response does not answer exactly the checks that were asked', {
+      throw violation('Judge response does not answer exactly the checks that were asked', {
         missing,
         unexpected,
       });

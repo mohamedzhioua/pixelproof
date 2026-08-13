@@ -17,6 +17,7 @@ the decision state, not implementation progress.
 | [0010 — Check identity, tri-state, and consensus](./0010-check-identity-tri-state-and-consensus.md) | Mechanical | Accepted |
 | [0011 — Acceptance versus scoring](./0011-acceptance-versus-scoring.md) | User-Challenge | Accepted |
 | [0013 — Pixel engine, color science, and heuristic status](./0013-pixel-engine-color-science-and-heuristic-status.md) | User-Challenge | Deferred |
+| [0014 — Evidence and report versioning](./0014-evidence-and-report-versioning.md) | Mechanical | Accepted |
 | [0016 — Authentication and support tiers](./0016-authentication-and-support-tiers.md) | User-Challenge | Accepted |
 | [0017 — Package and surface distribution](./0017-package-and-surface-distribution.md) | User-Challenge | Deferred |
 | [0019 — Degraded SVG rasterisation semantics](./0019-degraded-svg-rasterisation-semantics.md) | User-Challenge | Accepted |

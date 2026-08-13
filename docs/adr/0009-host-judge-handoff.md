@@ -114,9 +114,10 @@ index is a second thing that can disagree with the truth. The run id format is
 Windows filename character.
 
 The envelope shapes are versioned by the same `protocol: 1` as the judge adapter. The run and
-report envelope itself is the subject of ADR 0014 (evidence and report versioning), which is not
-yet written; this ADR reserves `state`, `judge-request-<round>.json` and
-`judge-result-<round>.json` within it and defers the rest.
+report envelope itself is the subject of
+[0014 — Evidence and report versioning](./0014-evidence-and-report-versioning.md); this ADR
+reserves `state`, `judge-request-<round>.json` and `judge-result-<round>.json` within it and defers
+the rest, which 0014 honours.
 
 **The artifact is promoted to `--out` only on acceptance.** Under `--judge`, the generator writes
 into the run directory and the file appears at `--out` when the run is accepted. An abandoned run
@@ -284,4 +285,5 @@ host is neither a trusted module nor an untrusted subprocess — it is a third t
 single-foreign-candidate lesson is why identity here is a nonce and not a digest. Consumes
 [0010 — Check identity, tri-state, and consensus](./0010-check-identity-tri-state-and-consensus.md)
 and [0011 — Acceptance versus scoring](./0011-acceptance-versus-scoring.md) unchanged. The run and
-report envelope this state lives in belongs to ADR 0014, which is not yet written.
+report envelope this state lives in belongs to
+[0014 — Evidence and report versioning](./0014-evidence-and-report-versioning.md).
