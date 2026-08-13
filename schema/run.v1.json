@@ -41,8 +41,81 @@
       "description": "Named, recorded refusals and outcomes. Codes are stable; the prose is not."
     },
     "notes": { "type": "array", "items": { "type": "string" } },
-    "judge": { "description": "Reserved for ADR 0009's handoff record. Not written by this phase." },
-    "rounds": { "description": "Reserved for ADR 0009's escalation rounds. Not written by this phase." },
+    "judge": {
+      "type": "object",
+      "description": "ADR 0009's handoff record, written when a run is judged. The authoritative per-check verdict table lives in `checks`: on escalation a round-2 verdict REPLACES the round-1 one for that check rather than joining a panel with it, and `escalatedFrom` records that it happened. Absent on a run that asked for no judge.",
+      "properties": {
+        "kind": { "const": "host" },
+        "policy": { "enum": ["all", "any", "majority"] },
+        "onUnsure": { "enum": ["escalate", "fail"] },
+        "deadlineMs": { "type": "integer", "minimum": 1 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "verdict", "round"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^s-[0-9a-f]{10}(#\\d+)?$" },
+              "assertion": { "type": ["string", "null"] },
+              "verdict": { "enum": ["pass", "fail", "unsure"] },
+              "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+              "evidence": { "type": ["string", "null"] },
+              "round": { "type": "integer", "minimum": 1, "maximum": 2 },
+              "judge": { "type": ["string", "null"] },
+              "disagreement": { "type": "boolean" },
+              "escalatedFrom": {
+                "oneOf": [
+                  { "type": "null" },
+                  {
+                    "type": "object",
+                    "required": ["round", "verdict"],
+                    "properties": {
+                      "round": { "type": "integer", "minimum": 1 },
+                      "verdict": { "enum": ["pass", "fail", "unsure"] }
+                    },
+                    "additionalProperties": true
+                  }
+                ]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "rounds": {
+      "type": "array",
+      "description": "ADR 0009's escalation rounds, in issue order. The open round is the last entry whose `submittedAt` is null; a run in `pending-judgement` has exactly one. Bounded at two — there is no round 3.",
+      "items": {
+        "type": "object",
+        "required": ["round", "issuedAt", "expiresAt", "checks", "submittedAt"],
+        "properties": {
+          "round": { "type": "integer", "minimum": 1, "maximum": 2 },
+          "issuedAt": { "$ref": "#/$defs/timestamp" },
+          "expiresAt": { "$ref": "#/$defs/timestamp" },
+          "escalationTerminal": { "type": "boolean" },
+          "onUnsure": { "enum": ["escalate", "fail"] },
+          "checks": { "type": "array", "items": { "type": "string" } },
+          "submittedAt": {
+            "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }],
+            "description": "Null while the round is unanswered. An unanswered round is never a pass."
+          },
+          "files": {
+            "type": "object",
+            "properties": {
+              "request": { "$ref": "#/$defs/relativePath" },
+              "result": {
+                "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/relativePath" }]
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
     "cache": { "description": "Reserved for ADR 0015. Not written by this phase." }
   },
   "$defs": {

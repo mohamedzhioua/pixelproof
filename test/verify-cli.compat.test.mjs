@@ -15,6 +15,17 @@ import {
   writePng,
 } from './helpers/compat-harness.mjs';
 
+/**
+ * The frozen banner, held byte for byte.
+ *
+ * The three `--judge*` / `--run-dir` lines and the `Host judgement:` section were
+ * added on 2026-08-13 under the amendment to ADR 0003, which permits purely
+ * additive lines documenting a new flag while every existing line stays
+ * byte-identical. Updating this constant is the deliberate act that amendment
+ * requires: it is the evidence, so it is edited with intent, and it is never
+ * deleted or loosened into a substring match to make a diff go away. Every line
+ * that was here before is still here, unchanged and in the same order.
+ */
 const VERIFIER_USAGE = `pixelproof mechanical verifier
 
 Usage:
@@ -25,7 +36,16 @@ Options:
   --spec <path>       JSON spec containing a mechanical block
   --json              Print a machine-readable result object
   --strict            Treat skipped checks as failures
+  --judge host        Ask the calling agent to judge the spec's semantic assertions
+  --judge-deadline    How long the checklist stays answerable (default 24h)
+  --run-dir <path>    Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help          Show this help
+
+Host judgement:
+  --judge host writes a checklist and exits 2: an outstanding judgement, never a
+  pass. Answer it with \`pixelproof judge submit\`. Needs a .png and a spec with at
+  least one "semantic" entry. --judge-deadline takes a duration such as 6h or 90m;
+  a unit is required, because a bare number could be seconds or milliseconds.
 `;
 
 const RESULT_FIELDS = [

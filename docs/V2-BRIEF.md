@@ -171,10 +171,14 @@ escalates to the host or fails under `--strict`.
 
 Judges to ship:
 
-- `host` — current behaviour, and still the default when running inside an agent. Core emits a
-  machine-readable checklist file and pauses; the host agent (Claude, Codex, Gemini, whoever)
-  opens the image with its own read/vision tool and writes verdicts back into a results file.
-  This keeps the zero-cost, zero-key path alive for every agent, not just Claude.
+- `host` — current behaviour, and still the default when running inside an agent. As designed
+  here this deadlocks: core cannot both "pause" and let the same agent process the checklist.
+  [ADR 0009](./adr/0009-host-judge-handoff.md) replaces the pause with a two-step handoff instead
+  — `generate --judge host` exits `2` (`PENDING_JUDGEMENT`) after writing
+  `judge-request-<round>.json`, and the host agent (Claude, Codex, Gemini, whoever) opens the
+  image with its own read/vision tool and runs `pixelproof judge submit` to record verdicts and
+  finalize the run. This keeps the zero-cost, zero-key path alive for every agent, not just
+  Claude.
 - `claude` / `gemini` / `codex` — non-interactive subprocess judges for CI, where no host agent
   is present.
 - `heuristic` — deterministic, no model: OCR-free text-likelihood via edge/stroke density,

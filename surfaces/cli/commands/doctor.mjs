@@ -42,6 +42,7 @@
  *   }>>,
  *   decoder?: () => Promise<{ sharp: unknown|null, error?: unknown }>,
  *   auth?: (row) => Promise<{ state, detail? }> | { state, detail? },
+ *   pending?: () => Promise<Array<{ record: object|null, error: object|null }>>,
  *   output?: Console,     // console-like sink; defaults to the real console
  *   timeoutMs?: number,   // default probe budget; --timeout overrides it
  * }
@@ -52,6 +53,7 @@
  * fast-path-only imitation of it.
  */
 
+import { hasExpired, listPendingRuns } from '../../../core/judge/index.mjs';
 import { loadSharpDecoder } from '../../../core/verification/inspect.mjs';
 import { printUsage, printUsageError } from '../format-errors.mjs';
 import { parseArguments } from '../parse.mjs';
@@ -59,11 +61,13 @@ import { parseArguments } from '../parse.mjs';
 export const DOCTOR_USAGE = `pixelproof environment report
 
 Usage:
-  pixelproof doctor [--json] [--timeout <ms>]
+  pixelproof doctor [--json] [--timeout <ms>] [--run-dir <path>]
 
 Options:
   --json              Print a machine-readable report
   --timeout <ms>      Budget for each probe (default 3000)
+  --run-dir <path>    Run root to scan for pending judgements; also
+                      PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help          Show this help
 
 doctor is read-only: it detects installed tools, never invokes a provider to
@@ -203,14 +207,22 @@ const DOCTOR_FLAGS = new Map([
   ['--help', 'help'],
 ]);
 
-const DOCTOR_VALUED = new Set(['--timeout']);
+const DOCTOR_VALUED = new Set(['--timeout', '--run-dir']);
 
-/** Parse doctor arguments. Throws on an unknown argument or a bad value. */
+/**
+ * Parse doctor arguments. Throws on an unknown argument or a bad value.
+ *
+ * `camelCase` is on for `--run-dir`. Every other doctor flag is a single word,
+ * so nothing existing is renamed — and `doctor` accepting a run root under a
+ * different key from `generate`, `verify` and `judge` would be the two-dialects
+ * problem ADR 0003 forbids, in miniature.
+ */
 export function parseDoctorArguments(argv) {
   const options = parseArguments(argv, {
     flags: DOCTOR_FLAGS,
     valued: DOCTOR_VALUED,
     defaults: { json: false, help: false },
+    camelCase: true,
   });
 
   if (options.timeout !== undefined) {
@@ -416,16 +428,50 @@ async function collectDecoder({ probe, timeoutMs }) {
 }
 
 /**
+ * Count what is still waiting on a host (ADR 0009 §4).
+ *
+ * This is the one line that makes an abandoned handoff visible to someone who
+ * never knew one happened — a run left pending by a crashed agent is invisible
+ * everywhere else, and an invisible outstanding judgement reads as "nothing to
+ * do". Scanning `run.json` files is read-only, spends nothing, and is bounded by
+ * the same probe budget as everything else here.
+ *
+ * A probe that fails reports zero *and says so*. Silently reporting zero would
+ * be the confident-wrong answer this command exists not to give.
+ */
+async function collectPending({ probe, timeoutMs }) {
+  const answer = await boundedProbe(probe, timeoutMs, 'the pending-judgement scan');
+  if (!answer.ok) {
+    return { total: 0, expired: 0, unreadable: 0, error: answer.error };
+  }
+
+  const now = new Date();
+  const entries = Array.isArray(answer.value) ? answer.value : [];
+  return {
+    total: entries.length,
+    expired: entries.filter((entry) => entry.record !== null && hasExpired(entry.record.expiresAt, now)).length,
+    unreadable: entries.filter((entry) => entry.error !== null).length,
+    error: null,
+  };
+}
+
+/**
  * Assemble the whole report as data. Rendering is a separate step so `--json`
  * and the human report cannot disagree about what was found.
  */
-export async function collectReport({ probes = undefined, timeoutMs = DEFAULT_PROBE_TIMEOUT_MS } = {}) {
+export async function collectReport({
+  probes = undefined,
+  timeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
+  runDir = null,
+} = {}) {
   const providerProbe = probes?.providers ?? (() => defaultProviderProbe(timeoutMs));
   const decoderProbe = probes?.decoder ?? loadSharpDecoder;
   const authProbe = probes?.auth ?? defaultAuthProbe;
+  const pendingProbe = probes?.pending ?? (() => listPendingRuns({ runDir }));
 
   const providers = await collectProviders({ probe: providerProbe, authProbe, timeoutMs });
   const decoder = await collectDecoder({ probe: decoderProbe, timeoutMs });
+  const pending = await collectPending({ probe: pendingProbe, timeoutMs });
 
   const availableIds = providers.rows.filter((row) => row.available).map((row) => row.id);
   const ok = availableIds.length > 0;
@@ -438,6 +484,7 @@ export async function collectReport({ probes = undefined, timeoutMs = DEFAULT_PR
     providers: providers.rows,
     providerProbeError: providers.error,
     decoder,
+    pending,
     summary: {
       providersAvailable: availableIds.length,
       providersTotal: providers.rows.length,
@@ -458,6 +505,24 @@ function field(label, value) {
 
 function continuation(value) {
   return `    ${' '.repeat(LABEL_WIDTH)}${value}`;
+}
+
+/**
+ * `2 pending host judgements (1 expired)` — ADR 0009 §4's one line.
+ *
+ * A failed scan says it failed rather than reporting none. "None outstanding"
+ * and "I could not look" are different facts, and only one of them means there
+ * is nothing to do.
+ */
+export function describePending(pending) {
+  if (!pending) return 'not scanned';
+  if (pending.error) return `could not scan (${pending.error})`;
+  if (pending.total === 0) return 'none pending';
+
+  const noun = pending.total === 1 ? 'judgement' : 'judgements';
+  const unreadable = pending.unreadable > 0 ? `, ${pending.unreadable} unreadable` : '';
+  return `${pending.total} pending host ${noun} (${pending.expired} expired${unreadable})`
+    + ' - pixelproof judge pending';
 }
 
 /**
@@ -536,6 +601,7 @@ export function renderReport(report) {
       ? 'full - every mechanical check can run'
       : `degraded - ${CHECKS_REQUIRING_DECODER.join(' and ')} will report SKIP, not PASS`,
   ));
+  lines.push(field('judgements', describePending(report.pending)));
   lines.push(field('verdict', report.summary.verdict));
 
   return `${lines.join('\n')}\n`;
@@ -563,7 +629,7 @@ export async function doctorCommand({ argv = [], probes = undefined } = {}) {
   }
 
   const timeoutMs = options.timeout ?? probes?.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
-  const report = await collectReport({ probes, timeoutMs });
+  const report = await collectReport({ probes, timeoutMs, runDir: options.runDir ?? null });
 
   if (options.json) {
     output.log(JSON.stringify(report, null, 2));

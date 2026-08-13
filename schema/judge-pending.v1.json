@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mohamedzhioua/pixelproof/schema/judge-pending.v1.json",
+  "title": "Pixelproof pending host judgement v1",
+  "description": "`judge-request-<round>.json` — the checklist a host agent answers (ADR 0009 §2), versioned by ADR 0014 §1. This envelope ships a schema document because, unlike `attempt-<n>.json`, it is read by something outside this repository: the agent that runs `pixelproof judge submit`. The envelope WRAPS the judge protocol, it does not extend it — `request` is exactly what `validateJudgeRequest()` accepts, and every handoff field sits outside it, because ADR 0006's policy is to reject unknown same-version fields on a protocol message.",
+  "type": "object",
+  "required": [
+    "schema",
+    "protocol",
+    "runId",
+    "round",
+    "maxRounds",
+    "escalationTerminal",
+    "onUnsure",
+    "nonce",
+    "issuedAt",
+    "expiresAt",
+    "artifact",
+    "checksDigest",
+    "request"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema": { "const": "pixelproof.judge-pending/1" },
+    "protocol": {
+      "const": 1,
+      "description": "The adapter protocol version the `request` block speaks. Versioned separately from `schema` because the two boundaries have opposite unknown-field policies (ADR 0014 §4)."
+    },
+    "runId": { "$ref": "#/$defs/runId" },
+    "round": { "type": "integer", "minimum": 1, "maximum": 2 },
+    "maxRounds": {
+      "const": 2,
+      "description": "ADR 0009 §5 bounds escalation at two rounds. There is no round 3: a genuinely ambiguous assertion terminates in `fail` rather than in an endless re-ask."
+    },
+    "escalationTerminal": {
+      "type": "boolean",
+      "description": "True on the escalation round, whose `onUnsure` is forced to `fail`. Recorded rather than inferred from the round number, so a reader need not re-derive a policy decision from a counter."
+    },
+    "onUnsure": {
+      "enum": ["escalate", "fail"],
+      "description": "Never `accept`. `unsure` is not silently promoted to `pass` (ADR 0010)."
+    },
+    "judge": { "const": "host" },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "32 random bytes. This is what proves WHOSE pending run a submission answers; the digests only prove the subject is unchanged. Two concurrent runs of the same spec over the same image compute identical digests, so identity cannot be derived from content (ADR 0009 §3). Single-use: finalisation moves the run off `pending-judgement`, so a replay finds no open round."
+    },
+    "issuedAt": { "$ref": "#/$defs/timestamp" },
+    "expiresAt": {
+      "$ref": "#/$defs/timestamp",
+      "description": "Default 24 hours, set by `--judge-deadline`. Past it, `judge submit` refuses with PENDING_EXPIRED and the run is finalised as rejected. Expiry is a verdict about the process, never about the artifact."
+    },
+    "pixelproofVersion": { "type": ["string", "null"] },
+    "issuer": {
+      "type": "object",
+      "description": "Diagnostic only. `hostname` is recorded but NOT enforced: a run directory can legitimately be shared between a container and its host, and refusing that would break a real workflow to defend against nothing the nonce does not already cover (ADR 0009 §3).",
+      "properties": {
+        "pid": { "type": ["integer", "null"] },
+        "hostname": { "type": ["string", "null"] },
+        "cwd": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["path", "sha256", "bytes"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativePath" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "specDigest": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+    "checksDigest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the canonical JSON of the `[id, assertion]` pairs, sorted by id. A submission must echo it; a difference means the spec moved under the host."
+    },
+    "request": {
+      "type": "object",
+      "description": "Exactly what `validateJudgeRequest()` accepts. `file` is relative to the run directory in this record so an archived directory stays readable; `pixelproof judge show --request` emits it resolved against the directory it was read from, because a judge process cannot open a path relative to a directory it was never told about.",
+      "required": ["protocol", "file", "checks"],
+      "properties": {
+        "protocol": { "const": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "context": { "type": ["string", "null"] },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "assertion"],
+            "properties": {
+              "id": { "$ref": "#/$defs/checkId" },
+              "assertion": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "runId": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}Z-[0-9a-f]{8}$"
+    },
+    "checkId": {
+      "type": "string",
+      "pattern": "^s-[0-9a-f]{10}(#\\d+)?$",
+      "description": "Content-derived, never positional (ADR 0010): reordering or composing specs must not change a check's identity."
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$))[^\\\\]+$"
+    }
+  }
+}

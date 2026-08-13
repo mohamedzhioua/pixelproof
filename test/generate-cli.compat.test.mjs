@@ -24,6 +24,17 @@ import {
   writePng,
 } from './helpers/compat-harness.mjs';
 
+/**
+ * The frozen banner, held byte for byte.
+ *
+ * The three `--judge*` / `--run-dir` lines and the `Host judgement:` section were
+ * added on 2026-08-13 under the amendment to ADR 0003, which permits purely
+ * additive lines documenting a new flag while every existing line stays
+ * byte-identical. Updating this constant is the deliberate act that amendment
+ * requires: it is the evidence, so it is edited with intent, and it is never
+ * deleted or loosened into a substring match to make a diff go away. Every line
+ * that was here before is still here, unchanged and in the same order.
+ */
 const GENERATOR_USAGE = `pixelproof image generator
 
 Usage:
@@ -36,6 +47,9 @@ Options:
   --size <WxH>             Desired pixels; verified when --spec is absent
   --spec <file>            Fold a JSON spec into the prompt and verify it; spec dimensions win
   --svg-file <path>        SVG source for the svg provider; otherwise read stdin
+  --judge host             Ask the calling agent to judge the spec's semantic assertions
+  --judge-deadline <dur>   How long the checklist stays answerable (default 24h)
+  --run-dir <path>         Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help               Show this help
 
 Size verification:
@@ -45,6 +59,14 @@ Size verification:
 
 Provider selection:
   --provider, then PIXELPROOF_PROVIDER, then .svg output, then Codex on PATH.
+
+Host judgement:
+  --judge host writes a checklist and exits 2: an outstanding judgement, never a pass.
+  The artifact is written into the run directory and appears at --out only once the run
+  is accepted, so a rejected or abandoned run leaves no file there. Answer it with
+  \`pixelproof judge submit\`. Needs a .png target and a spec with at least one "semantic"
+  entry. --judge-deadline takes a duration such as 6h or 90m; a unit is required, because
+  a bare number could be seconds or milliseconds.
 `;
 
 const VALID_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="#fff"/></svg>';

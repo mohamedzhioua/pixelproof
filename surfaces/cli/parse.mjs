@@ -27,7 +27,16 @@ Options:
   --spec <path>       JSON spec containing a mechanical block
   --json              Print a machine-readable result object
   --strict            Treat skipped checks as failures
+  --judge host        Ask the calling agent to judge the spec's semantic assertions
+  --judge-deadline    How long the checklist stays answerable (default 24h)
+  --run-dir <path>    Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help          Show this help
+
+Host judgement:
+  --judge host writes a checklist and exits 2: an outstanding judgement, never a
+  pass. Answer it with \`pixelproof judge submit\`. Needs a .png and a spec with at
+  least one "semantic" entry. --judge-deadline takes a duration such as 6h or 90m;
+  a unit is required, because a bare number could be seconds or milliseconds.
 `;
 
 export const GENERATE_USAGE = `pixelproof image generator
@@ -42,6 +51,9 @@ Options:
   --size <WxH>             Desired pixels; verified when --spec is absent
   --spec <file>            Fold a JSON spec into the prompt and verify it; spec dimensions win
   --svg-file <path>        SVG source for the svg provider; otherwise read stdin
+  --judge host             Ask the calling agent to judge the spec's semantic assertions
+  --judge-deadline <dur>   How long the checklist stays answerable (default 24h)
+  --run-dir <path>         Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help               Show this help
 
 Size verification:
@@ -51,13 +63,26 @@ Size verification:
 
 Provider selection:
   --provider, then PIXELPROOF_PROVIDER, then .svg output, then Codex on PATH.
+
+Host judgement:
+  --judge host writes a checklist and exits 2: an outstanding judgement, never a pass.
+  The artifact is written into the run directory and appears at --out only once the run
+  is accepted, so a rejected or abandoned run leaves no file there. Answer it with
+  \`pixelproof judge submit\`. Needs a .png target and a spec with at least one "semantic"
+  entry. --judge-deadline takes a duration such as 6h or 90m; a unit is required, because
+  a bare number could be seconds or milliseconds.
 `;
 
 /**
- * `--svg-file` becomes `svgFile`; `--file` stays `file`. Only the generator ever
- * had a dashed option, so only it asks for the conversion — applying it
- * unconditionally would be harmless today but would silently rename a future
- * verifier flag.
+ * `--svg-file` becomes `svgFile`; `--file` stays `file`.
+ *
+ * This used to be generator-only, on the reasoning that applying it
+ * unconditionally "would be harmless today but would silently rename a future
+ * verifier flag". ADR 0009 is that future: `--judge-deadline` and `--run-dir`
+ * land on both commands, and a verifier option keyed `judge-deadline` while the
+ * generator's is `judgeDeadline` would be exactly the two-dialects problem ADR
+ * 0003 forbids. Every v1 verifier flag is a single word, so turning it on
+ * renames nothing that already exists.
  */
 function optionKey(argument, camelCase) {
   const name = argument.slice(2);
@@ -98,7 +123,25 @@ const VERIFY_FLAGS = new Map([
   ['--help', 'help'],
 ]);
 
-const VERIFY_VALUED = new Set(['--file', '--spec']);
+/**
+ * ADR 0009's options, accepted by both commands and listed in both banners.
+ *
+ * They are in the banners under the **2026-08-13 amendment to ADR 0003**, which
+ * permits purely additive lines documenting a new flag while every existing line
+ * stays byte-identical. The reasoning is in ADR 0003: the freeze exists to
+ * prevent behavioural drift, and a help line adds no behaviour, whereas a flag
+ * whose own command's help does not mention it is undiscoverable by the only
+ * route a user would try.
+ *
+ * What the amendment does **not** relax, and what the compatibility tests still
+ * hold byte for byte: no existing line may change, and no exit code, JSON field
+ * or documented semantic may move. The banners still say `node
+ * scripts/verify.mjs`, because these commands remain synonyms for the legacy
+ * scripts rather than a new dialect.
+ */
+const JUDGE_VALUED = Object.freeze(['--judge', '--judge-deadline', '--run-dir']);
+
+const VERIFY_VALUED = new Set(['--file', '--spec', ...JUDGE_VALUED]);
 
 const GENERATE_FLAGS = new Map([
   ['-h', 'help'],
@@ -112,6 +155,7 @@ const GENERATE_VALUED = new Set([
   '--size',
   '--spec',
   '--svg-file',
+  ...JUDGE_VALUED,
 ]);
 
 /** Parse verifier arguments. Throws on an unknown argument or a missing value. */
@@ -120,6 +164,7 @@ export function parseVerifyArguments(argv) {
     flags: VERIFY_FLAGS,
     valued: VERIFY_VALUED,
     defaults: { json: false, strict: false, help: false },
+    camelCase: true,
   });
 }
 

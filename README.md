@@ -25,7 +25,9 @@ Pixelproof therefore uses a configurable per-channel colour tolerance, defaultin
 leaving judgments such as "no invented branding" to Claude's eyes.
 
 > **About `semantic`:** entries in a spec's `semantic` array are not checked by JavaScript.
-> Claude must open the produced image with its Read tool and judge every entry visibly.
+> The agent must open the produced image with its own image-reading capability and judge
+> every entry visibly. `--judge host` makes that a recorded step rather than a convention —
+> see [`pixelproof judge`](#pixelproof-judge).
 
 When either tier finds a real failure, Claude refines the prompt with the specific violation
 and retakes the image. The loop is bounded by `retakes`; failure is reported rather than
@@ -130,13 +132,17 @@ unchanged. They share the same handlers in the same process, so they are synonym
 two dialects — identical flags, output and exit codes.
 
 ```sh
-pixelproof <command> [options]     # generate | verify | doctor
+pixelproof <command> [options]     # generate | verify | doctor | judge
 node bin/pixelproof.mjs verify --file lamp.png --spec specs/product-hero.example.json
 node scripts/verify.mjs   --file lamp.png --spec specs/product-hero.example.json
 ```
 
 The package is `private`, so `pixelproof` resolves after `npm link`; in a checkout, run
 `node bin/pixelproof.mjs`.
+
+Exit codes are `0` accepted, `1` rejected or errored, and — only on the `--judge` path
+below — `2` for an outstanding judgement. **`2` is never a pass**, so a gate already written
+as "non-zero is failure" is correct without changing anything.
 
 ### `pixelproof doctor`
 
@@ -145,15 +151,78 @@ providers are installed, each one's declared limits, and — the part that cause
 confusion — **which mechanical checks will run and which will `SKIP`**.
 
 ```sh
-pixelproof doctor            # human report
-pixelproof doctor --json     # the same document, machine-readable
+pixelproof doctor                        # human report
+pixelproof doctor --json                 # the same document, machine-readable
+pixelproof doctor --run-dir ci/evidence  # scan a run root that is not the working directory's
 ```
+
+It also reports outstanding host judgements — `N pending host judgements (M expired)` — so a
+handoff left unanswered by a crashed agent is visible to someone who never knew one happened. A
+scan it could not perform says so rather than reporting none.
 
 It is read-only and never spends quota. It will not invoke a provider to generate anything,
 and it deliberately does not probe authentication, because that means a network call that can
 hang behind a login prompt. Credentials it cannot cheaply prove are reported as
 `unknown / not safely probeable` rather than guessed at — a confident wrong "ready" is the
 failure this project exists to prevent, so `doctor` does not produce one about itself.
+
+### `pixelproof judge`
+
+The semantic tier is the half a vision model has to answer, and the obvious shape for it
+deadlocks: the agent that ran `generate` is the only entity that can open the image, and
+while it waits on the child process it can neither read the file nor write the verdicts the
+child is waiting for. `--judge host` replaces the wait with **two invocations that never
+block on each other**.
+
+```sh
+pixelproof generate --prompt "A ceramic desk lamp" --out output/lamp.png \
+  --spec specs/product-hero.example.json --judge host
+# exit 2 — a checklist was written and no verdict exists yet
+
+pixelproof judge submit --run <id> --results verdicts.json
+# exit 0 accepted, 1 rejected, 2 escalated to a further round
+```
+
+> **The artifact appears at `--out` only when the run is accepted.** Under `--judge`, the
+> generator writes into the run directory and promotes the file on acceptance. A rejected or
+> abandoned run therefore leaves **no file at `--out`** — which is the mechanical form of "an
+> unanswered checklist is not a pass". The candidate is still on disk in the run directory
+> and is named in the report. This is the one place `--judge host` and bare `generate`
+> deliberately differ.
+
+| Command | Purpose |
+| --- | --- |
+| `pixelproof judge pending [--json]` | Open judgements with age, deadline and expiry. Exits `2` while any exist, so it works as a CI or pre-commit gate. |
+| `pixelproof judge show --run <id> [--request]` | Print the checklist; `--request` prints the bare protocol-1 request a judge can consume verbatim. |
+| `pixelproof judge submit [--run <id>] [--results <path>\|-] [--interactive]` | Record verdicts and finalise. `--interactive` prompts per check and refuses when stdin is not a terminal. |
+| `pixelproof judge abandon --run <id> --reason "<why>"` | Close a pending run as rejected, on the record. |
+
+`--run` may be omitted only when exactly one run is pending; two or more is refused naming
+each candidate, because a run that cannot prove which record is its own does not get to
+guess.
+
+**Identity is proven, not inferred.** Each pending record carries a single-use 32-byte
+nonce, and a submission must echo `runId`, `nonce` and `checksDigest`. Digests alone cannot
+do this: two concurrent runs of the same spec over the same image compute identical digests,
+so only possession of the nonce shows the submitter read *this* pending record. A submission
+is refused with a named reason — `PENDING_NONCE_MISMATCH`, `PENDING_CHECKS_MISMATCH`,
+`PENDING_EXPIRED`, `ARTIFACT_CHANGED` and five more — recorded in `run.json` and printed by
+the report.
+
+An `unsure` verdict escalates once: a second round re-asks only the unsure assertions with
+`unsure` resolving to `fail`, and the round-2 verdict *replaces* the round-1 one rather than
+joining it. There is no third round, so a genuinely ambiguous assertion terminates in `fail`.
+
+Evidence lives in `.pixelproof/runs/<run id>/` — `run.json`, the attempt and its mechanical
+table, `judge-request-<round>.json`, `judge-result-<round>.json`, `report.json` and
+`report.md`. Override the location with `--run-dir` or `PIXELPROOF_RUN_ROOT` so CI can put it
+on a retained path. Deadlines default to 24 hours and are set with `--judge-deadline 6h`
+(a unit is required — a bare number is refused rather than guessed at). Nothing is swept:
+an abandoned run directory is retained, because the evidence is the point.
+
+`--judge host` needs a `.png` target and a spec with at least one `semantic` entry, and it
+refuses both up front rather than after spending a generation. Subprocess judges exist in the
+codebase but are not wired to `generate`/`verify` yet, so `host` is the only accepted value.
 
 ### The script form
 
