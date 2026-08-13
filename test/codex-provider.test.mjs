@@ -69,6 +69,86 @@ function runGenerator(...arguments_) {
   });
 }
 
+test('rejects a stale pre-existing target without modifying it', async () => {
+  await withFakeCodex('', async ({ root }) => {
+    const outputPath = path.join(root, 'output', 'result.png');
+    const staleBytes = Buffer.from('pre-existing target');
+    const staleTime = new Date('2020-01-01T00:00:00.000Z');
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, staleBytes);
+    await utimes(outputPath, staleTime, staleTime);
+    const before = await stat(outputPath);
+
+    const result = runGenerator(
+      '--provider', 'codex',
+      '--prompt', 'test image',
+      '--out', outputPath,
+    );
+
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /pre-existing file.*rejected as stale/is);
+    assert.ok(result.stderr.includes(outputPath));
+    assert.match(result.stderr, /2020-01-01T00:00:00\.000Z/);
+    assert.match(result.stderr, /run start time "\d{4}-\d{2}-\d{2}T[^\"]+Z"/);
+    assert.deepEqual(await readFile(outputPath), staleBytes);
+    assert.equal((await stat(outputPath)).mtimeMs, before.mtimeMs);
+  });
+});
+
+test('recovers a fresh session image when the target is stale', async () => {
+  const freshBytes = Buffer.from('fresh session image');
+  const fakeCodex = `
+    import { mkdir, writeFile } from 'node:fs/promises';
+    import path from 'node:path';
+    const directory = path.join(process.env.CODEX_HOME, 'generated_images', 'fresh-session');
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'exec-fresh.png'), ${JSON.stringify(freshBytes.toString())});
+  `;
+
+  await withFakeCodex(fakeCodex, async ({ root }) => {
+    const outputPath = path.join(root, 'output', 'result.png');
+    const staleTime = new Date('2020-01-01T00:00:00.000Z');
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, 'pre-existing target');
+    await utimes(outputPath, staleTime, staleTime);
+    const notBefore = Date.now();
+
+    const result = runGenerator(
+      '--provider', 'codex',
+      '--prompt', 'test image',
+      '--out', outputPath,
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(await readFile(outputPath), freshBytes);
+    assert.ok((await stat(outputPath)).mtimeMs >= notBefore);
+  });
+});
+
+test('accepts a target written directly during the Codex run', async () => {
+  const freshBytes = Buffer.from('fresh direct target');
+  const fakeCodex = `
+    import { writeFile } from 'node:fs/promises';
+    import path from 'node:path';
+    await writeFile(path.join(process.cwd(), 'result.png'), ${JSON.stringify(freshBytes.toString())});
+  `;
+
+  await withFakeCodex(fakeCodex, async ({ root }) => {
+    const outputPath = path.join(root, 'output', 'result.png');
+    const notBefore = Date.now();
+
+    const result = runGenerator(
+      '--provider', 'codex',
+      '--prompt', 'test image',
+      '--out', outputPath,
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(await readFile(outputPath), freshBytes);
+    assert.ok((await stat(outputPath)).mtimeMs >= notBefore);
+  });
+});
+
 test('recovers the newest post-run PNG recursively and logs the recovery', async () => {
   const fakeCodex = `
     import { mkdir, writeFile } from 'node:fs/promises';

@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.2] - 2026-08-13
+
+### Fixed
+
+- A pre-existing file at the output path was accepted as a successful generation because the
+  post-run check tested existence rather than freshness, so a failed run could report success
+  on stale content.
+
 ## [0.1.1] - 2026-08-13
 
 ### Fixed
