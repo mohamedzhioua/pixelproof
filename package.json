@@ -4,6 +4,9 @@
   "description": "Spec-driven image generation and two-tier verification for Claude Code.",
   "type": "module",
   "private": true,
+  "bin": {
+    "pixelproof": "bin/pixelproof.mjs"
+  },
   "engines": {
     "node": ">=22.0.0"
   },

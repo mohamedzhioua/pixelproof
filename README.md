@@ -123,7 +123,40 @@ samples all four corner pixels against `expect` using per-channel `tolerance` (d
 
 ## Standalone CLI
 
-The scripts work without Claude. Generate a raster and automatically run its mechanical spec:
+Everything works without Claude. There are two equivalent entry points: `bin/pixelproof.mjs`
+groups the commands under one executable, and the original `scripts/*.mjs` paths keep working
+unchanged. They share the same handlers in the same process, so they are synonyms rather than
+two dialects — identical flags, output and exit codes.
+
+```sh
+pixelproof <command> [options]     # generate | verify | doctor
+node bin/pixelproof.mjs verify --file lamp.png --spec specs/product-hero.example.json
+node scripts/verify.mjs   --file lamp.png --spec specs/product-hero.example.json
+```
+
+The package is `private`, so `pixelproof` resolves after `npm link`; in a checkout, run
+`node bin/pixelproof.mjs`.
+
+### `pixelproof doctor`
+
+Reports what this machine can actually do, before you spend a generation finding out: which
+providers are installed, each one's declared limits, and — the part that causes the most
+confusion — **which mechanical checks will run and which will `SKIP`**.
+
+```sh
+pixelproof doctor            # human report
+pixelproof doctor --json     # the same document, machine-readable
+```
+
+It is read-only and never spends quota. It will not invoke a provider to generate anything,
+and it deliberately does not probe authentication, because that means a network call that can
+hang behind a login prompt. Credentials it cannot cheaply prove are reported as
+`unknown / not safely probeable` rather than guessed at — a confident wrong "ready" is the
+failure this project exists to prevent, so `doctor` does not produce one about itself.
+
+### The script form
+
+Generate a raster and automatically run its mechanical spec:
 
 ```sh
 node scripts/generate.mjs --prompt "A ceramic desk lamp on seamless white" --out output/lamp.png --size 1254x1254 --spec specs/product-hero.example.json
