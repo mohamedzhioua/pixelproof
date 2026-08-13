@@ -42,7 +42,11 @@ What the amendment does **not** relax:
   **deliberately** — it is the evidence, so it is edited with intent and never deleted or
   loosened into a substring match.
 
-Maintainer confirmation: the maintainer made this call on 2026-08-13.
+This applies to the v1 banners only. `doctor` postdates v0.1.2 and was never frozen surface, so
+its banner is ordinary prose.
+
+Maintainer confirmation: the maintainer made **this amendment** on 2026-08-13, with the reasoning
+recorded above.
 
 ## Consequences
 
@@ -52,4 +56,9 @@ be explicit and may add or clarify only the diagnostic prose needed to explain t
 A banner is now an append-only document within a major: it can gain lines but cannot lose or
 reword them, so its growth is bounded by how many flags a command accumulates.
 
-Maintainer confirmation: the maintainer made this call on 2026-08-13.
+Byte comparison alone cannot tell an addition from a rewording — it fails identically for both,
+and the obvious fix for either is to paste in the new output. `test/judge-cli.test.mjs` therefore
+also holds every pre-amendment line present, unchanged and in order, so that shortcut cannot
+launder a reworded line past the freeze.
+
+Maintainer confirmation: the maintainer made the original decision on 2026-08-13.
