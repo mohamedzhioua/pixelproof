@@ -286,6 +286,14 @@ Refusing to ship is a valid, and sometimes the correct, outcome. Three examples 
 text-likelihood detection was **measured and refused** because a heading on flat artwork scores
 indistinguishably from an empty frame, so a "no text" assertion would be marked satisfied with
 text plainly visible; a duplicate threshold was refused because the corpus that would justify it
-does not exist yet; and ADR 0021 built the single-judge `--judge codex` path while refusing the
-mixed panel it also specifies, because that panel could not be proven against the real vendor
-this week either. Every refusal is recorded with its evidence.
+does not exist yet; and the ADR 0009 slice refused to wire a subprocess judge it could not prove
+end to end. Every refusal is recorded with its evidence.
+
+**ADR 0021 then took the opposite call on that third one, deliberately.** It wired `--judge
+codex` while the Codex account was still over quota, so the generate → judge → promote path has
+never met the vendor. That is defensible only because of how it is labelled: no document claims
+a trial happened, the CHANGELOG says so in its own section, and every test uses a fake serving
+both roles. Both calls are recorded on purpose — the earlier refusal is not superseded, and if
+the labelling ever slips, shipping an unproven path becomes the wrong call retroactively. Verify
+against the real CLI once quota returns (**2026-08-18**), then update this note and the CHANGELOG
+with the observed output — or say plainly that it still has not run.
