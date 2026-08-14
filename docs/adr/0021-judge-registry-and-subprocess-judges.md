@@ -336,6 +336,14 @@ is made.
 - ADR 0009 §5's mixed-panel sentence remains unimplemented after this slice if §10's recommendation
   stands. It should be recorded as *deliberately not built*, in the handoff, not left to look like
   an oversight.
+- **`pixelproof retake` refuses a subprocess-judged run by name.** This was found while
+  implementing rather than while designing, and it is recorded here so it does not read later as
+  an oversight. §7 puts the retake *inside* `generate`, so a subprocess run never waits for an
+  operator between attempts and `retake` should never be reached for one. Reaching it means the
+  run was interrupted, and resuming it would mean re-judging attempt *n+1* through a registry
+  that command does not build. It fails closed — naming `judge abandon` and a fresh `generate` —
+  rather than resuming as though the run were a host run, which would issue a checklist nobody
+  asked for. Making `retake` resume a subprocess run is a later decision, not a bug fix.
 
 ## Related
 
