@@ -53,5 +53,13 @@ default. Increase it only when the use case accepts more variation, and use zero
 deterministic, code-authored assets where byte-exact colour is truly required.
 
 Keep semantic criteria concrete and separate. Prefer "No people or hands appear anywhere"
-over "Looks professional", and split unrelated conditions so a retake prompt can name the
+over "Looks professional", and split unrelated conditions so a retake's correction can name the
 specific violation.
+
+## `retakes` only means something with `--judge`
+
+`retakes` bounds the total attempts inside a judged run (`generate --judge host`). It is not
+read at all without `--judge`: a bare `generate` makes exactly one provider call regardless of
+what this field says, and `--retakes` on the command line is refused without `--judge` too.
+Absent, it defaults to a single attempt. Set it above 1 only when the caller intends to pass
+`--judge host`.

@@ -20,8 +20,19 @@
     "command": { "type": ["string", "null"] },
     "resolved": {
       "type": "object",
-      "description": "Resolved spec, provider, judge and environment decisions. Its presence is stable; its interior is a diagnostic bag and is not versioned (ADR 0014 §3).",
-      "additionalProperties": true
+      "description": "Resolved spec, provider, judge and environment decisions. Its presence is stable; its interior is a diagnostic bag and is not versioned (ADR 0014 §3). ADR 0020 §4 reads `prompt`, `provider`, `size` and `retakes` back out of it to build attempt n+1, which is exactly why the original prompt is recorded here at generate time and costs nothing to add.",
+      "additionalProperties": true,
+      "properties": {
+        "retakes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The attempt bound this run was opened with: `--retakes`, else `spec.retakes`, else 1 (ADR 0020 §6). Honoured only inside a judged run."
+        },
+        "prompt": {
+          "type": ["string", "null"],
+          "description": "The original prompt, before spec folding. Null on a run that had none, such as one opened by `verify --judge host`."
+        }
+      }
     },
     "attempts": {
       "type": "array",
@@ -61,7 +72,11 @@
               "verdict": { "enum": ["pass", "fail", "unsure"] },
               "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
               "evidence": { "type": ["string", "null"] },
-              "round": { "type": "integer", "minimum": 1, "maximum": 2 },
+              "round": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The run-wide round number the verdict came from. Rounds do not restart per attempt (ADR 0020 §5), so this is not bounded at 2; the two-round bound is per attempt and lives in `rounds[].attempt`."
+              },
               "judge": { "type": ["string", "null"] },
               "disagreement": { "type": "boolean" },
               "escalatedFrom": {
@@ -87,12 +102,17 @@
     },
     "rounds": {
       "type": "array",
-      "description": "ADR 0009's escalation rounds, in issue order. The open round is the last entry whose `submittedAt` is null; a run in `pending-judgement` has exactly one. Bounded at two — there is no round 3.",
+      "description": "ADR 0009's escalation rounds, in issue order. The open round is the last entry whose `submittedAt` is null; a run in `pending-judgement` has exactly one. Bounded at two rounds PER ATTEMPT — there is no round 3 for an attempt. Round numbers do not restart per attempt (ADR 0020 §5): attempt 1 uses rounds 1 and possibly 2, attempt 2 starts at round 3, which keeps `judge-request-<round>.json` unique inside one directory.",
       "items": {
         "type": "object",
         "required": ["round", "issuedAt", "expiresAt", "checks", "submittedAt"],
         "properties": {
-          "round": { "type": "integer", "minimum": 1, "maximum": 2 },
+          "round": { "type": "integer", "minimum": 1 },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Which attempt this round judges. Absent on rounds written before ADR 0020, where it is 1 because only one attempt could exist."
+          },
           "issuedAt": { "$ref": "#/$defs/timestamp" },
           "expiresAt": { "$ref": "#/$defs/timestamp" },
           "escalationTerminal": { "type": "boolean" },

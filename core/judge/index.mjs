@@ -57,13 +57,29 @@ export {
   OUTCOME_REASONS,
   decideOutcome,
   foldVerdicts,
+  lastRoundOf,
   listPendingRuns,
+  listStalledRuns,
   openPendingRun,
   openRoundOf,
   parseSubmission,
+  roundInAttempt,
+  selectClosableRun,
   selectPendingRun,
   verifySubmission,
 } from './submit.mjs';
+
+export {
+  DEFAULT_RETAKES,
+  assertRetakeable,
+  attemptsOf,
+  boundOf,
+  hasRetakeLeft,
+  nextAttemptNumber,
+  openRetakeableRun,
+  resolveRetakeBound,
+  retakesLeft,
+} from './retake.mjs';
 
 export {
   DEFAULT_POLICY,

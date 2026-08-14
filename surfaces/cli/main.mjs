@@ -54,6 +54,10 @@ export const COMMANDS = new Map([
     summary: 'List, show, answer or close a pending host judgement',
     load: () => import('./commands/judge.mjs').then((module) => module.runJudge),
   }],
+  ['retake', {
+    summary: 'Spend another attempt on a run whose last one was rejected',
+    load: () => import('./commands/retake.mjs').then((module) => module.runRetake),
+  }],
 ]);
 
 /** The command names, in registry order — what the help and errors list. */
@@ -96,6 +100,15 @@ Host judgement (ADR 0009):
 With \`--judge host\` the artifact is written into the run directory and appears
 at \`--out\` only once the run is accepted. The command exits 2, which means an
 outstanding judgement and is never a pass. Answer it with \`pixelproof judge\`.
+
+Retakes (ADR 0020):
+  --retakes <n>             Maximum total attempts inside one judged run.
+                            Needs --judge; without it a generate makes exactly
+                            one attempt. Defaults to spec.retakes, then 1.
+
+A rejected attempt with the bound unspent leaves the run open; spend the next
+attempt with \`pixelproof retake --run <id>\`, or close the run on the record with
+\`pixelproof judge abandon\`. Nothing is promoted on exhaustion.
 `;
 }
 

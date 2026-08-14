@@ -109,48 +109,77 @@ test('malformed run ids are refused before any path is built from them', () => {
 // State machine
 // ---------------------------------------------------------------------------
 
+/**
+ * The transition table, written out independently of `core/run/state.mjs` on
+ * purpose: a test that imported the same table it checks would pass for any
+ * table.
+ *
+ * `pending-judgement -> running` was added by ADR 0020 §1 (a retake is a new
+ * attempt inside the same run). It is the *only* edge that decision opens, and
+ * editing this constant alone would destroy the protection it provides — so the
+ * test below also proves the updated table still bites on every pair it still
+ * refuses.
+ */
+const LEGAL_TRANSITIONS = new Set([
+  `${RUNNING}->${PENDING_JUDGEMENT}`,
+  `${RUNNING}->${ACCEPTED}`,
+  `${RUNNING}->${REJECTED}`,
+  `${RUNNING}->${ABANDONED}`,
+  `${PENDING_JUDGEMENT}->${RUNNING}`,
+  `${PENDING_JUDGEMENT}->${PENDING_JUDGEMENT}`,
+  `${PENDING_JUDGEMENT}->${ACCEPTED}`,
+  `${PENDING_JUDGEMENT}->${REJECTED}`,
+  `${PENDING_JUDGEMENT}->${ABANDONED}`,
+]);
+
+/** Every ordered pair of states, as `from->to` keys. */
+function everyStatePair() {
+  const pairs = [];
+  for (const from of RUN_STATES) {
+    for (const to of RUN_STATES) pairs.push(`${from}->${to}`);
+  }
+  return pairs;
+}
+
+/** Whether the real machine agrees with a hypothetical table on all 25 pairs. */
+function machineMatches(table) {
+  return everyStatePair().every((key) => {
+    const [from, to] = key.split('->');
+    return canTransition(from, to) === table.has(key);
+  });
+}
+
 test('every illegal state transition is refused, and terminal states are final', () => {
-  // Written out independently of core/run/state.mjs on purpose: a test that
-  // imported the same table it checks would pass for any table.
-  const legal = new Set([
-    `${RUNNING}->${PENDING_JUDGEMENT}`,
-    `${RUNNING}->${ACCEPTED}`,
-    `${RUNNING}->${REJECTED}`,
-    `${RUNNING}->${ABANDONED}`,
-    `${PENDING_JUDGEMENT}->${PENDING_JUDGEMENT}`,
-    `${PENDING_JUDGEMENT}->${ACCEPTED}`,
-    `${PENDING_JUDGEMENT}->${REJECTED}`,
-    `${PENDING_JUDGEMENT}->${ABANDONED}`,
-  ]);
+  const legal = LEGAL_TRANSITIONS;
 
   const refused = [];
-  for (const from of RUN_STATES) {
-    for (const to of RUN_STATES) {
-      const key = `${from}->${to}`;
-      if (legal.has(key)) {
-        assert.equal(canTransition(from, to), true, `${key} should be legal`);
-        assert.equal(assertTransition(from, to), to);
-        continue;
-      }
-
-      assert.equal(canTransition(from, to), false, `${key} should be refused`);
-      assert.throws(
-        () => assertTransition(from, to),
-        (error) => error instanceof RunError && error.code === 'RUN_STATE_TRANSITION_REFUSED',
-        `${key} must be refused`,
-      );
-      refused.push(key);
+  for (const key of everyStatePair()) {
+    const [from, to] = key.split('->');
+    if (legal.has(key)) {
+      assert.equal(canTransition(from, to), true, `${key} should be legal`);
+      assert.equal(assertTransition(from, to), to);
+      continue;
     }
+
+    assert.equal(canTransition(from, to), false, `${key} should be refused`);
+    assert.throws(
+      () => assertTransition(from, to),
+      (error) => error instanceof RunError && error.code === 'RUN_STATE_TRANSITION_REFUSED',
+      `${key} must be refused`,
+    );
+    refused.push(key);
   }
 
-  // 25 pairs, 8 legal. Asserted as a count so a shrinking state set cannot make
-  // this test vacuous.
+  // 25 pairs, 9 legal. Asserted as a count so a shrinking state set cannot make
+  // this test vacuous. It was 8 legal / 17 refused before ADR 0020 §1.
   assert.equal(RUN_STATES.length, 5);
-  assert.equal(refused.length, 17);
+  assert.equal(legal.size, 9);
+  assert.equal(refused.length, 16);
 
-  // The two that matter most, named for the record.
+  // The one that matters most, named for the record. `pending-judgement ->
+  // running` is now legal; `accepted -> running` is what keeps ADR 0009's nonce
+  // single-use, and it has its own test below.
   assert.ok(refused.includes(`${ACCEPTED}->${RUNNING}`), 'a closed run must never reopen');
-  assert.ok(refused.includes(`${PENDING_JUDGEMENT}->${RUNNING}`), 'submit records verdicts, it never re-runs');
 
   for (const state of [ACCEPTED, REJECTED, ABANDONED]) {
     for (const to of RUN_STATES) {
@@ -160,6 +189,61 @@ test('every illegal state transition is refused, and terminal states are final',
 
   assert.throws(() => assertTransition('running', 'finished'), (error) => error instanceof RunError);
   assert.throws(() => assertTransition('idle', 'accepted'), (error) => error instanceof RunError);
+});
+
+test('the transition table above still fires: no single extra edge survives it', () => {
+  // A guard on the guard. Editing LEGAL_TRANSITIONS to match a widened
+  // implementation is the obvious way to "fix" the test above, and it would
+  // silently retire the protection — so prove the table discriminates at every
+  // pair it refuses, by checking the machine against mutated in-memory copies
+  // rather than against itself.
+  assert.equal(machineMatches(LEGAL_TRANSITIONS), true, 'the table must describe the shipped machine');
+
+  const refused = everyStatePair().filter((key) => !LEGAL_TRANSITIONS.has(key));
+  assert.equal(refused.length, 16);
+
+  for (const widened of refused) {
+    assert.equal(
+      machineMatches(new Set([...LEGAL_TRANSITIONS, widened])),
+      false,
+      `legalising ${widened} in core/run/state.mjs must break the table test, and does not`,
+    );
+  }
+
+  // And in the other direction: removing any legal edge must break it too, so a
+  // narrowed machine cannot slip past either.
+  for (const narrowed of LEGAL_TRANSITIONS) {
+    const table = new Set(LEGAL_TRANSITIONS);
+    table.delete(narrowed);
+    assert.equal(machineMatches(table), false, `removing ${narrowed} must break the table test`);
+  }
+});
+
+test('pending-judgement is the only state that re-enters running (ADR 0020 §1)', () => {
+  // ADR 0020 re-opened exactly one edge. This invariant is asserted separately
+  // from the table so that widening it later is a deliberate act against a named
+  // rule rather than an unnoticed extra line in a set literal.
+  const reopens = RUN_STATES.filter((from) => canTransition(from, RUNNING));
+  assert.deepEqual(reopens, [PENDING_JUDGEMENT]);
+
+  // `accepted -> running` is what makes ADR 0009's nonce genuinely single-use: a
+  // replayed submission finds a run that cannot leave its final state. A retake
+  // must never widen this.
+  assert.equal(canTransition(ACCEPTED, RUNNING), false, 'an accepted run must never re-enter running');
+  assert.equal(canTransition(REJECTED, RUNNING), false, 'a rejected run must never re-enter running');
+  assert.equal(canTransition(ABANDONED, RUNNING), false, 'an abandoned run must never re-enter running');
+
+  assert.throws(
+    () => assertTransition(ACCEPTED, RUNNING),
+    (error) => error instanceof RunError
+      && error.code === 'RUN_STATE_TRANSITION_REFUSED'
+      && /accepted is final/.test(error.message),
+  );
+
+  // The new edge is real, not merely undeclared: prove it is taken, so this test
+  // cannot pass by the machine having no edges at all.
+  assert.equal(canTransition(PENDING_JUDGEMENT, RUNNING), true);
+  assert.equal(assertTransition(PENDING_JUDGEMENT, RUNNING), RUNNING);
 });
 
 test('accepted is a projection of state, never an independent field', () => {

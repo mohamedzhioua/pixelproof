@@ -35,8 +35,10 @@ import path from 'node:path';
 
 import { AdapterError } from '../../../core/contracts/errors.mjs';
 import { VERDICTS } from '../../../core/contracts/judge.mjs';
+import { correctionsFor } from '../../../core/generation/correction.mjs';
 import {
   applySubmission,
+  boundOf,
   closePendingRun,
   describeRemaining,
   hasExpired,
@@ -46,6 +48,8 @@ import {
   pendingRequestFile,
   pendingRequestFor,
   promoteArtifact,
+  retakesLeft,
+  selectClosableRun,
   selectPendingRun,
   verifySubmission,
 } from '../../../core/judge/index.mjs';
@@ -55,6 +59,7 @@ import { printUsage, printUsageError } from '../format-errors.mjs';
 import {
   printChecklist,
   printJudgeError,
+  printRetakeOffer,
   printVerdicts,
   renderPendingList,
 } from '../format-judge.mjs';
@@ -72,6 +77,7 @@ Usage:
 
 Options:
   --run <id>          The pending run. May be omitted only when exactly one is open.
+                      abandon also reaches a run left open between retake attempts.
   --results <path>    Verdicts as JSON; "-" reads standard input.
   --interactive       Prompt for each check. Refuses when stdin is not a terminal.
   --request           Print the bare protocol-1 judge request instead of the checklist.
@@ -322,6 +328,26 @@ async function judgeSubmit(argv, output) {
   printVerdicts(applied.checks, output);
   output.log('');
 
+  // ADR 0020 §2: the bound was unspent, so the run is still open and the ball is
+  // with whoever decides whether to spend another generation. Exit 1, not 2 —
+  // 2 means an outstanding judgement, and after a rejecting submission there is
+  // none. 1 is also the honest answer if the caller stops here: nothing was
+  // accepted.
+  if (applied.outcome === 'retakeable') {
+    printRetakeOffer({
+      runId: opened.runId,
+      attempt,
+      retakesLeft: retakesLeft(applied.run),
+      bound: boundOf(applied.run),
+      corrections: correctionsFor({
+        verification: null,
+        semantic: { checks: applied.checks },
+      }),
+      runDir: options.runDir ?? null,
+    }, output);
+    return 1;
+  }
+
   if (applied.outcome !== 'accepted') {
     output.log(`Rejected: ${applied.reason}. The candidate is still on disk in ${opened.directory}.`);
     return 1;
@@ -355,10 +381,16 @@ async function judgeAbandon(argv, output) {
     return 1;
   }
 
-  const opened = await selectPendingRun({ runId: options.run ?? null, runDir: options.runDir ?? null });
+  // Wider than `submit`'s selector: a run left in `running` between attempts has
+  // no outstanding judgement, so `selectPendingRun` cannot see it, and without
+  // this it could never be closed on the record at all (ADR 0020).
+  const opened = await selectClosableRun({ runId: options.run ?? null, runDir: options.runDir ?? null });
   await closePendingRun(opened.directory, { message: options.reason });
 
   output.log(`Run ${opened.runId} closed as rejected: ${options.reason}`);
+  if (opened.round !== null) {
+    output.log(`Round ${opened.round.round} was never answered, and an unanswered checklist is never a pass.`);
+  }
   output.log(`Nothing was accepted. The candidate and its report are in ${opened.directory}.`);
   return 1;
 }

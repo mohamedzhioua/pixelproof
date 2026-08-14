@@ -53,6 +53,7 @@ Options:
   --svg-file <path>        SVG source for the svg provider; otherwise read stdin
   --judge host             Ask the calling agent to judge the spec's semantic assertions
   --judge-deadline <dur>   How long the checklist stays answerable (default 24h)
+  --retakes <n>            Maximum total attempts in a judged run; needs --judge
   --run-dir <path>         Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help               Show this help
 
@@ -71,6 +72,13 @@ Host judgement:
   \`pixelproof judge submit\`. Needs a .png target and a spec with at least one "semantic"
   entry. --judge-deadline takes a duration such as 6h or 90m; a unit is required, because
   a bare number could be seconds or milliseconds.
+
+Retakes:
+  --retakes <n> bounds the total attempts inside one judged run and defaults to
+  spec.retakes, then to 1. It needs --judge: without one, generate makes exactly one
+  provider call, so honouring a bound would only change what the call costs. A rejected
+  attempt leaves the run open; continue it with \`pixelproof retake --run <id>\`. Nothing
+  is promoted on exhaustion.
 `;
 
 /**
@@ -148,6 +156,14 @@ const GENERATE_FLAGS = new Map([
   ['--help', 'help'],
 ]);
 
+/**
+ * `--retakes` is generator-only (ADR 0020 §6).
+ *
+ * `verify` inspects an image somebody else made; there is no provider call to
+ * repeat and no prompt to correct, so a bound there would name an attempt the
+ * command could never spend. It stays an unknown argument to `verify`, which is
+ * the parser's existing answer for a flag that does not apply.
+ */
 const GENERATE_VALUED = new Set([
   '--prompt',
   '--out',
@@ -155,6 +171,7 @@ const GENERATE_VALUED = new Set([
   '--size',
   '--spec',
   '--svg-file',
+  '--retakes',
   ...JUDGE_VALUED,
 ]);
 

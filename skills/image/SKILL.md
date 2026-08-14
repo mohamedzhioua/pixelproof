@@ -22,29 +22,40 @@ provided as `PIXELPROOF_ROOT`).
    spec exists, invoke the `pixelproof:spec` skill (or follow that skill's interview and JSON
    format) and write `specs/<name>.json`. Do not invent consequential product constraints
    when a brief question would resolve them.
-2. Set the maximum number of total attempts from `spec.retakes`; use 3 when it is absent.
-   This is a hard bound, not a suggestion.
-3. Keep attempt files in `.pixelproof-scratch/` with distinct names such as
-   `<asset>-attempt-1.png`. This preserves earlier candidates so the best attempt can still
-   be selected if the final retake regresses.
-4. Generate one candidate:
+2. Decide whether this generation is judged. **The retake bound is enforced by the tool, not
+   by counting here, and only applies under `--judge host`.** Pass `--retakes <n>`, or omit it
+   and let the tool read `spec.retakes`, defaulting to a single attempt when neither is given.
+   Without `--judge`, `--retakes` is refused and `spec.retakes` is never read at all — a bare
+   `generate` makes exactly one provider call regardless of what the spec says. Use
+   `--judge host` whenever the spec's `semantic` entries need to be recorded evidence, or
+   whenever the retake bound should apply at all.
+3. Generate the first attempt:
 
    ```sh
-   node "${CLAUDE_PLUGIN_ROOT:-$PIXELPROOF_ROOT}/scripts/generate.mjs" --prompt "<specific prompt>" --out ".pixelproof-scratch/<asset>-attempt-1.png" --spec "<spec path>"
+   node "${CLAUDE_PLUGIN_ROOT:-$PIXELPROOF_ROOT}/scripts/generate.mjs" --prompt "<specific prompt>" --out "<asset path>.png" --spec "<spec path>" --judge host
    ```
 
-   A non-zero exit may mean the image was created but failed its automatic mechanical gate.
-   Inspect the report and the file; do not discard the evidence.
-5. Run the mechanical tier explicitly and read every row:
+   A non-zero exit without `--judge` may mean the image was created but failed its automatic
+   mechanical gate; inspect the report and the file, do not discard the evidence. Under
+   `--judge`, exit 2 means a checklist was written and no verdict exists yet — go to
+   **Recording the semantic tier** below.
+4. Read every row of the mechanical table. `FAIL` is a failed tier. `SKIP` means an optional
+   decoder was unavailable: report that criterion as unverified rather than quietly calling it
+   a pass, and do not spend a retake on it, because another image cannot repair the
+   environment.
+
+   Under `--judge` with the bound unspent, a mechanical failure needs nothing from you: the
+   tool corrects the prompt from its own measured values and regenerates the next numbered
+   attempt (`attempt-2.png`, `attempt-3.png`, …) **inside the run directory, in the same
+   process**. Read the printed correction and carry on.
+
+   Without `--judge` there is one attempt and no automatic retake, so run the tier explicitly
+   against the file you were given:
 
    ```sh
-   node "${CLAUDE_PLUGIN_ROOT:-$PIXELPROOF_ROOT}/scripts/verify.mjs" --file ".pixelproof-scratch/<asset>-attempt-1.png" --spec "<spec path>"
+   node "${CLAUDE_PLUGIN_ROOT:-$PIXELPROOF_ROOT}/scripts/verify.mjs" --file "<asset path>.png" --spec "<spec path>"
    ```
-
-   `FAIL` is a failed tier. `SKIP` means an optional decoder was unavailable; report that
-   criterion as unverified rather than quietly calling it a pass. Do not waste retakes on a
-   missing decoder because another image cannot repair the environment.
-6. Judge every entry in `spec.semantic` against the image itself. **Open the produced file
+5. Judge every entry in `spec.semantic` against the image itself. **Open the produced file
    with whatever image-reading capability this host has** — do not infer semantic success
    from the prompt, the filename, Codex output, or the mechanical report. State each
    criterion verbatim, mark it `pass`, `fail` or `unsure`, and give a short piece of visible
@@ -53,19 +64,26 @@ provided as `PIXELPROOF_ROOT`).
    Recording the verdicts through the tool, rather than only in your reply, is the supported
    path — it is what puts them in the run's evidence. See **Recording the semantic tier**
    below.
-7. If any mechanical or semantic criterion fails, construct the next prompt from the prior
-   prompt plus a direct correction naming each observed violation. Examples: "remove the
-   invented label on the front face", "the lower-right lockup area must remain empty white",
-   or "extend the seamless background into all four corners." Generate a new attempt file,
-   rerun the mechanical tier, and read the new image again.
-8. Stop immediately when both tiers pass, or when the maximum attempt count is reached.
-   Never loop forever and never silently accept a failure. Copy the passing attempt to the
-   requested destination. On exhaustion, copy only the best attempt if the user asked for an
-   output, label it as not fully passing, and list every remaining failure.
+6. If the checklist comes back rejected and the retake bound is unspent, `judge submit` leaves
+   the run open (state `running`) rather than finalising it, and prints the exact next command.
+   Continue with it:
+
+   ```sh
+   pixelproof retake --run <id>
+   ```
+
+   This reads the prompt, spec, provider and output back from the run record, assembles the
+   correction from that attempt's own recorded evidence — never invented — and regenerates a
+   new numbered attempt in the same run directory. Return to step 5 and judge it.
+7. Stop when the run is accepted, when a new checklist is pending, or when the retake bound is
+   spent. **Nothing is promoted on exhaustion**: a run that spends its bound without an
+   accepted attempt finalises rejected, `--out` stays empty, and the run's report lists every
+   attempt with its mechanical table and verdicts. Read the report and choose by hand — there
+   is no ranking function the tool can appeal to, so it never picks a "best" attempt for you.
 
 ## Recording the semantic tier
 
-`--judge host` turns step 6 into two invocations that never block on each other. This exists
+`--judge host` turns step 5 into two invocations that never block on each other. This exists
 because the blocking shape is impossible: the agent that ran `generate` is the only entity
 that can open the image, and while it waits on the child process it cannot read anything.
 
@@ -76,8 +94,10 @@ pixelproof generate --prompt "<prompt>" --out output/hero.png --spec specs/hero.
 
 Then:
 
-1. Read `judge-request-1.json` in the run directory the command names, or run
-   `pixelproof judge show --run <id>` to print the same checklist again.
+1. Read `judge-request-<round>.json` in the run directory the command names — round 1 on a
+   first attempt, and a higher number on an escalation or a retake, since round numbers run
+   across the whole run — or run `pixelproof judge show --run <id>` to print the open
+   checklist again.
 2. Open the artifact it points at with this host's image-reading capability and judge each
    assertion.
 3. Write the verdicts and submit them. Echo `runId`, `nonce` and `checksDigest` back exactly
@@ -118,16 +138,20 @@ Rules that are enforced, not advisory:
 - If you cannot answer, close the run on the record with
   `pixelproof judge abandon --run <id> --reason "<why>"`. Leaving it open is not neutral —
   it is an unanswered checklist, which is never a pass.
+- **A rejected run with the bound unspent stays open**, not finalised — continue it with
+  `pixelproof retake --run <id>` (step 6 above) rather than starting a new run.
 
-Steps 4–6 without `--judge` remain exactly as they were, and are the right choice for a
-quick single asset. Use `--judge host` when the verdicts need to be evidence.
+Dropping `--judge` remains the right choice for a quick single asset that needs no recorded
+semantic evidence: `generate` then makes exactly one provider call, `--retakes` is refused,
+and `spec.retakes` is not read. Use `--judge host` whenever the verdicts need to be evidence
+or the retake bound should apply.
 
 ## Receipt
 
 Finish with a compact receipt containing:
 
 - attempts made;
-- the prompt correction made for each retake;
+- the correction applied for each retake (printed by the tool, or read from the run's report);
 - the mechanical verdict, including skipped checks;
 - every semantic criterion and its final verdict;
 - the run id and its final state when `--judge host` was used;

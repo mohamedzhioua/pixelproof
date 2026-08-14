@@ -24,7 +24,7 @@ import path from 'node:path';
 import { acceptanceFor, combineVerdicts, parseJudgeResponse } from '../contracts/judge.mjs';
 import { assertRunId } from '../run/id.mjs';
 import { resolveRunDirectory } from '../run/root.mjs';
-import { PENDING_JUDGEMENT } from '../run/state.mjs';
+import { PENDING_JUDGEMENT, RUNNING, isTerminalState } from '../run/state.mjs';
 import { listRuns, readRun } from '../run/store.mjs';
 import { hasExpired } from './deadline.mjs';
 import { PendingError, asPendingError } from './errors.mjs';
@@ -42,6 +42,10 @@ export const OUTCOME_REASONS = Object.freeze({
   abandoned: 'judgement-abandoned',
   awaiting: 'awaiting-host-judgement',
   nothingDeclared: 'no-semantic-assertions',
+  // ADR 0020 §2. `retakeAvailable` is the one reason recorded on a run that is
+  // still open: the attempt was rejected and the next one has not started.
+  retakeAvailable: 'retake-available',
+  exhausted: 'retakes-exhausted',
 });
 
 function isPlainObject(value) {
@@ -55,6 +59,36 @@ export function openRoundOf(run) {
     if (rounds[index]?.submittedAt == null) return rounds[index];
   }
   return null;
+}
+
+/**
+ * Where a round sits inside its own attempt (ADR 0020 §5).
+ *
+ * Round numbers run across the whole run — attempt 2 starts at round 3 — but ADR
+ * 0009 §5's bound of two rounds is *per attempt*, so escalation has to count
+ * within the attempt rather than within the run. A round summary written before
+ * ADR 0020 records no `attempt`; for those the two numberings coincide, which is
+ * why the fallback is the round number itself rather than a guess.
+ */
+export function roundInAttempt(run, round) {
+  const rounds = Array.isArray(run?.rounds) ? run.rounds : [];
+  const entry = rounds.find((candidate) => candidate?.round === round) ?? null;
+  if (entry === null || !Number.isInteger(entry.attempt)) return round;
+
+  const siblings = rounds
+    .filter((candidate) => candidate?.attempt === entry.attempt)
+    .map((candidate) => candidate.round)
+    .sort((left, right) => left - right);
+  const position = siblings.indexOf(round);
+  return position === -1 ? round : position + 1;
+}
+
+/** The highest round number issued so far, or 0 when none has been. */
+export function lastRoundOf(run) {
+  const rounds = Array.isArray(run?.rounds) ? run.rounds : [];
+  return rounds.reduce((highest, entry) => (
+    Number.isInteger(entry?.round) && entry.round > highest ? entry.round : highest
+  ), 0);
 }
 
 /**
@@ -92,6 +126,88 @@ export async function listPendingRuns(options = {}) {
   }
 
   return pending;
+}
+
+/**
+ * Every run that is open but has nothing outstanding: `running`, with at least
+ * one attempt recorded (ADR 0020's orphan).
+ *
+ * This is the state a retake leaves behind when an operator never continues and
+ * never abandons. It is invisible to `judge pending` — correctly, because
+ * nothing is pending — which is exactly why it has to be visible somewhere else.
+ * ADR 0009 §4's guarantee is that an abandoned handoff is visible to someone who
+ * never knew one happened, and it would quietly stop being true for the retake
+ * path if nobody counted these.
+ *
+ * "With at least one attempt" is the whole definition. A `running` run with no
+ * attempt is either a generation in flight right now or one that died before it
+ * produced anything; neither is a judgement anyone is waiting on.
+ */
+export async function listStalledRuns(options = {}) {
+  const runs = await listRuns(options);
+  return runs.filter((entry) => (
+    entry.state === RUNNING && Array.isArray(entry.run?.attempts) && entry.run.attempts.length > 0
+  ));
+}
+
+/**
+ * Resolve `--run` to a run that can be closed on the record.
+ *
+ * Wider than `selectPendingRun` on purpose: ADR 0020 requires `judge abandon` to
+ * reach a run left in `running` between attempts, or such a run would have no
+ * way to be closed at all. It is not wider than that — a terminal run is still
+ * refused, because a closed run is already on the record.
+ *
+ * Nothing is discarded by closing a `running` run: verdicts are written before
+ * the run ever leaves `pending-judgement`, so a run that is closable mid-retake
+ * has already recorded everything anyone submitted. A run whose round is still
+ * *unanswered* is a different case and stays exactly as it was — abandoning it
+ * is ADR 0009 §4's explicit "an unanswered checklist is never a pass", and the
+ * report says so.
+ */
+export async function selectClosableRun({ runId = null, root, runDir, env, cwd } = {}) {
+  if (typeof runId === 'string' && runId.trim() !== '') {
+    let directory;
+    try {
+      assertRunId(runId);
+      directory = resolveRunDirectory({ runId, root, runDir, env, cwd }).directory;
+    } catch (error) {
+      throw asPendingError(error, { runId });
+    }
+
+    let run;
+    try {
+      run = await readRun(directory);
+    } catch (error) {
+      throw asPendingError(error, { runId, directory });
+    }
+
+    if (isTerminalState(run.state)) {
+      throw new PendingError('PENDING_NOT_OPEN', `Run ${runId} is already ${run.state}; a closed run is on the record`, {
+        details: { runId, directory, state: run.state },
+      });
+    }
+
+    return { runId, directory, run, round: openRoundOf(run), record: null };
+  }
+
+  const candidates = [
+    ...await listPendingRuns({ root, runDir, env, cwd }),
+    ...await listStalledRuns({ root, runDir, env, cwd }),
+  ];
+
+  if (candidates.length === 0) {
+    throw new PendingError('PENDING_NOT_FOUND', 'No run is open', { details: { candidates: [] } });
+  }
+  if (candidates.length > 1) {
+    throw new PendingError(
+      'PENDING_NOT_OPEN',
+      `${candidates.length} runs are open; name one with --run: ${candidates.map((entry) => entry.runId).join(', ')}`,
+      { details: { candidates: candidates.map((entry) => entry.runId) } },
+    );
+  }
+
+  return selectClosableRun({ runId: candidates[0].runId, root, runDir, env, cwd });
 }
 
 /**
@@ -316,6 +432,12 @@ export function foldVerdicts({ prior = [], record, response, policy = 'all' }) {
  * a run that is already rejected spends a host round to change nothing. Semantic
  * assertions are hard gates (ADR 0011), so no count of passes offsets one
  * failure.
+ *
+ * `round` here is the round's position **within its attempt**, not its run-wide
+ * number (ADR 0020 §5). Attempt 2's first round is run round 3 and attempt
+ * round 1, and it is entitled to its own escalation; passing the run-wide number
+ * would silently deny every attempt after the first the escalation ADR 0009 §5
+ * grants it. Callers get the right value from `roundInAttempt(run, round)`.
  */
 export function decideOutcome({ checks, onUnsure = 'escalate', round = 1 }) {
   const failing = checks.filter((check) => check.verdict === 'fail');

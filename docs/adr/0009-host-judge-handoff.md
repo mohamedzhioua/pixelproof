@@ -7,6 +7,40 @@
   the design flagged as least certain — promotion-on-acceptance, and a round-2 host verdict
   replacing rather than joining the panel.
 
+## Amendment — a rejected attempt may leave the run open (2026-08-14)
+
+[0020 — Retakes under a judged run](./0020-retakes-under-a-judged-run.md) amends §1 and §2, and
+is recorded here so a reader of this document alone is not left with a rule that has moved.
+
+**§1's sentence is unchanged: `judge submit` still records verdicts and never re-runs the run.**
+What changes is that "not final" becomes a third outcome beside accepted and rejected. When the
+retake bound is unspent, a semantic rejection records the verdicts, moves the run back to
+`running`, prints the correction and the exact `pixelproof retake` command, and exits 1. The next
+generation is a separate invocation an operator chooses to spend, so this file's guarantee — that
+`surfaces/cli/commands/judge.mjs` stays out of the provider tree and `--interactive` on a human's
+terminal can never silently start a paid call — is intact.
+
+The reason §1 gave for closing `pending-judgement -> running` is precise and still holds:
+regenerating on resume "would produce a *different* artifact than the one the host actually looked
+at, leaving verdicts that describe bytes which no longer exist". That targets re-running *the
+same* attempt. A retake is attempt *n+1* in a new numbered slot; attempt *n*'s bytes, its
+mechanical table, its verdicts and its round files are immutable once written, so every verdict
+still describes exactly the bytes it was formed against.
+
+**`accepted -> running` is still refused**, so §3's nonce is still single-use: a replayed
+submission finds a run that cannot leave its final state. ADR 0020 §1 opens exactly one edge, and
+`test/run-directory.test.mjs` asserts that no second one crept in with it.
+
+§5's bound of two rounds is unchanged, and is now explicitly **two per attempt**. Round *numbers*
+run across the whole run — attempt 2 starts at round 3 — which keeps the
+`judge-request-<round>.json` filename this document reserved unique inside one directory. §2's
+promotion rule is unchanged everywhere, including on exhaustion, where nothing is promoted at all.
+
+§4's `doctor` line gains the case ADR 0020 makes possible: a run left in `running` between
+attempts, which nothing is pending on and which would otherwise be invisible to the very line that
+exists to make an abandoned handoff visible. `judge abandon` reaches such a run too, so it can
+still be closed on the record, and no verdict already submitted is discarded by that close.
+
 ## Context
 
 [`V2-BRIEF.md`](../V2-BRIEF.md) §3.2 specifies the `host` judge as: core "emits a machine-readable
@@ -217,7 +251,10 @@ it, the two are unified: **escalation is a further pending round containing only
 checks.**
 
 - Rounds are bounded at **2**. Round 2 is issued with `onUnsure` forced to `fail`, recorded in the
-  record as `escalationTerminal: true`. There is no round 3.
+  record as `escalationTerminal: true`. There is no round 3. *(Amended 2026-08-14 by ADR 0020 §5:
+  the bound is two rounds **per attempt**, and round numbers run across the whole run, so a
+  retaken run's second attempt begins at run round 3 with its own escalation at round 4. There is
+  still no third round for any one attempt. See the Amendment section above.)*
 - A round-2 host verdict **replaces** the escalated verdict for that check; it does not join the
   panel for it. Under the default `all` policy, joining would leave round-1 `unsure` combined with
   round-2 `pass` as `unsure` forever, so escalation would resolve nothing. Replacement is what

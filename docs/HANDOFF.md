@@ -1,7 +1,7 @@
 # Pixelproof — session handoff
 
-Written 2026-08-13. Read this, then `docs/adr/README.md`. **The files are the memory, not the
-chat history.**
+Written 2026-08-13, updated 2026-08-14. Read this, then `docs/adr/README.md`. **The files are the
+memory, not the chat history.**
 
 ---
 
@@ -10,12 +10,10 @@ chat history.**
 | | |
 | --- | --- |
 | Repo | `C:\Users\User\Desktop\github\pixelproof` → `github.com/mohamedzhioua/pixelproof` (public) |
-| Released | **v0.2.1** — Phase 1 Foundations plus its two debts |
-| Branch | `feat/host-judge-handoff`, pushed, PR open against `main` |
-| `main` | `294d3c4`, clean |
-| Tests | **279**, zero fail, **zero todo** (244 before this slice) |
-| Unreleased on `main` | Phase 2 Evidence internals |
-| Unreleased on the branch | ADR 0009, the host judge handoff — the first Phase 2 work reachable from the CLI |
+| Released | **v0.3.0 — Evidence**, tagged from `52bac93` |
+| `main` | `52bac93`, clean, CI green on the merge (`ab0943f`) and the release commit individually |
+| Tests | **304**, zero fail, **zero todo** (280 before the ADR 0020 slice) |
+| In flight | ADR 0020 retakes — built on `feat/retakes-under-judged-run`, unreleased (§3.1) |
 
 `npm test` runs serially on purpose (`--test-concurrency=1`) and takes roughly 1–2 minutes.
 That is expected, not a hang.
@@ -69,6 +67,51 @@ check would reject every otherwise-correct image forever.
    both refused before a provider is invoked. Degrading a vector target to `SKIP` would report
    an unverified image as verified, and ADR 0019 has not been re-decided yet (§4.4 below).
 
+## 3.1 What the retake slice built (ADR 0020), and what it deliberately did not
+
+**Built, on `feat/retakes-under-judged-run`:**
+
+- `pending-judgement -> running` is legal. One edge, opened only for a *new attempt number*
+  while the bound is unspent. `core/judge/retake.mjs` holds the half a state machine cannot
+  express; `core/run/state.mjs`'s load-bearing comment was rewritten rather than deleted.
+- `--retakes <n>` on `generate`; the bound is `--retakes`, else `spec.retakes`, else **1**, and
+  it is honoured only with `--judge`. `spec.retakes` is now read by code for the first time.
+- `pixelproof retake --run <id>`, a fifth top-level command, with `RETAKE_EXHAUSTED` and
+  `RETAKE_NOT_OPEN` added to ADR 0009 §3's closed set (nine → eleven, ADR-recorded).
+- `core/generation/correction.mjs`: the correction block, assembled from recorded evidence and
+  never invented — measured values for mechanical checks, the host's own `evidence` verbatim
+  for semantic ones, and "no evidence was recorded" where there was none.
+- A mechanical failure retakes in the same process; a semantic rejection leaves the run open
+  and prints the command. `judge submit` still never generates.
+- `judge abandon` reaches a run in `running`; `doctor`'s line counts one.
+- Round numbers continue across attempts (attempt 2 starts at round 3); the two-round bound is
+  per attempt and `rounds[]` records which attempt each round judges.
+
+**Deliberately not built:**
+
+1. **`--retakes > 1` with the `svg` provider is refused**, at the front door, before any
+   generation. A retake is a corrected prompt and the svg provider is handed markup, so a
+   second attempt would reproduce the first byte for byte.
+2. **A judge that errored (`ok: false`) does not open a retake.** That reply says the judging
+   failed, not the artifact.
+3. **Nothing is promoted on exhaustion, and no attempt is ranked.** Scoring is still unbuilt;
+   "best" would silently mean "last". `skills/image/SKILL.md` step 8's best-attempt promotion
+   was removed rather than kept as a labelled exception.
+
+Three guards worth not undoing, each proven to fire by mutating the source and watching the
+suite go red:
+
+- `test/run-directory.test.mjs` holds the 25-pair transition table as a golden constant, then
+  proves the table still discriminates by checking the machine against **mutated in-memory
+  copies** — legalising any one of the 16 refused pairs must break it, and so must removing any
+  of the 9 legal ones. A third test pins the invariant by name: `pending-judgement` is the only
+  state that re-enters `running`, and `accepted -> running` is what keeps the nonce single-use.
+- `test/retake.test.mjs` proves a stale nonce is still refused after a run re-opens, and pairs
+  each refusal with the same payload that succeeds, so the refusals are the mechanism biting
+  rather than a malformed submission.
+- `test/retake-cli.test.mjs` drives the real binary with a counting fake Codex that serves a
+  different image per call, so the correction really is shown to reach the provider's prompt.
+
 ## 4. Open decisions — maintainer's, not yours to take silently
 
 1. **ADR 0013 should probably be split.** Its colour-science half is implemented and validated
@@ -97,14 +140,17 @@ comparison (paste in the new output) still fails if an old line was reworded on 
 
 In rough order of value:
 
-1. **Retakes under a judged run** — confirmed by the maintainer on 2026-08-13 as the next slice,
-   with its own thinking rather than a tail-end addition. The run directory and `attempts[]`
-   already model several attempts; nothing yet produces a second one. This is the missing half
-   of the loop the image skill describes in prose.
-2. **The judge registry and `--judge codex`**, once quota returns — with ADR 0009 §5's mixed
-   panel and `combineVerdicts` at submit time over the full panel.
-3. **A release.** Phase 2 now has a user-visible capability for the first time, so a `0.3.0` is
-   defensible in a way it was not before this slice.
+1. **The judge registry and `--judge codex`**, once quota returns (2026-08-18) — with ADR 0009
+   §5's mixed panel and `combineVerdicts` at submit time over the full panel.
+2. **Contact sheets across attempts** (brief §5). Possible for the first time now that a run
+   can hold more than one attempt, and explicitly out of ADR 0020's scope.
+3. **Scoring**, which is what a best-attempt promotion would need before it could exist. It
+   would also need an amendment to ADR 0009 §2; a default that quietly hands back an unverified
+   image is not the shortcut.
+4. **A release** for ADR 0020, once its PR is merged and CI is green on the merge commit.
+
+Released on 2026-08-14: **v0.3.0 — Evidence**, the first Phase 2 work reachable from the CLI.
+ADR 0020's retakes are built and unreleased on `feat/retakes-under-judged-run` (§3.1).
 
 ## 6. Model routing — maintainer's standing instruction (2026-08-13)
 

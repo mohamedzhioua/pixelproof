@@ -536,6 +536,12 @@ test('without --judge nothing changes: no run directory, and the v1 banners only
         assert.ok(lines.some((line) => line.trimStart().startsWith(flag)),
           `${command} --help must list ${flag} in its options`);
       }
+      // ADR 0020's flag, added under the same amendment and on the generator
+      // only: `verify` has no provider call to repeat, so a bound there would
+      // name an attempt the command could never spend.
+      const listsRetakes = lines.some((line) => line.trimStart().startsWith('--retakes'));
+      assert.equal(listsRetakes, command === 'generate',
+        `${command} --help must ${command === 'generate' ? 'list' : 'not list'} --retakes`);
       // Matched across a line wrap: verify's banner is narrower than
       // generate's, so the sentence breaks in a different place.
       assert.match(usage, /exits 2: an outstanding judgement/);
@@ -585,10 +591,14 @@ test('doctor --run-dir scans the run root it was given, not the default one', as
 });
 
 test('doctor reports outstanding judgements, and says when it could not look', async () => {
-  const probes = (pending) => ({
+  const probes = (pending, stalled = async () => []) => ({
     providers: async () => [{ id: 'svg', kinds: ['vector'], available: true }],
     decoder: async () => ({ sharp: {} }),
     pending,
+    // Injected even when it is empty: without it doctor would fall back to
+    // scanning the real run root, and a test that reads the checkout's own
+    // `.pixelproof/` fails for reasons that have nothing to do with the code.
+    stalled,
   });
 
   const none = capture();
@@ -629,5 +639,69 @@ test('doctor reports outstanding judgements, and says when it could not look', a
     probes: { ...probes(async () => [{ record: { expiresAt: past }, error: null }]), output: asJson.output },
   });
   const report = JSON.parse(asJson.stdout);
-  assert.deepEqual(report.pending, { total: 1, expired: 1, unreadable: 0, error: null });
+  assert.deepEqual(report.pending, { total: 1, expired: 1, unreadable: 0, stalled: 0, error: null });
+});
+
+test('doctor counts a run left open between retake attempts (ADR 0020)', async () => {
+  // The orphan ADR 0020 creates: a run rejected on one attempt, with the bound
+  // unspent, that nobody retook and nobody abandoned. Nothing is pending on it,
+  // so `judge pending` cannot see it — which is exactly why this line has to.
+  const probes = (pending, stalled) => ({
+    providers: async () => [{ id: 'svg', kinds: ['vector'], available: true }],
+    decoder: async () => ({ sharp: {} }),
+    pending,
+    stalled,
+  });
+
+  const orphaned = capture();
+  await doctorCommand({
+    argv: [],
+    probes: {
+      ...probes(async () => [], async () => [{ runId: '2026-08-14T09-00-00Z-a1b2c3d4' }]),
+      output: orphaned.output,
+    },
+  });
+  assert.match(orphaned.stdout, /judgements: {2,}none pending; 1 run open between attempts/);
+  assert.match(orphaned.stdout, /pixelproof retake --run <id>/,
+    'the line must say what to do about it, or it is a number nobody acts on');
+
+  // It is reported alongside a pending count rather than instead of one.
+  const both = capture();
+  await doctorCommand({
+    argv: [],
+    probes: {
+      ...probes(
+        async () => [{ record: { expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, error: null }],
+        async () => [{ runId: '2026-08-14T09-00-00Z-a1b2c3d4' }, { runId: '2026-08-14T09-00-01Z-a1b2c3d5' }],
+      ),
+      output: both.output,
+    },
+  });
+  assert.match(both.stdout, /1 pending host judgement \(0 expired\)/);
+  assert.match(both.stdout, /2 runs open between attempts/);
+
+  // A failed open-run scan is "I could not look", not "none".
+  const broken = capture();
+  await doctorCommand({
+    argv: [],
+    probes: {
+      ...probes(async () => [], async () => { throw new Error('run root unreadable'); }),
+      output: broken.output,
+    },
+  });
+  assert.match(broken.stdout, /judgements: {2,}could not scan \(run root unreadable\)/);
+  assert.doesNotMatch(broken.stdout, /none pending/,
+    'a scan that failed must never read as nothing outstanding');
+
+  const asJson = capture();
+  await doctorCommand({
+    argv: ['--json'],
+    probes: {
+      ...probes(async () => [], async () => [{ runId: '2026-08-14T09-00-00Z-a1b2c3d4' }]),
+      output: asJson.output,
+    },
+  });
+  assert.deepEqual(JSON.parse(asJson.stdout).pending, {
+    total: 0, expired: 0, unreadable: 0, stalled: 1, error: null,
+  });
 });

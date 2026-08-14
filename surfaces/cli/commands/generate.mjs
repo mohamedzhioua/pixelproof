@@ -24,6 +24,7 @@ import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { runOnce } from '../../../core/generation/run-once.mjs';
+import { foldCorrectionsIntoPrompt } from '../../../core/generation/correction.mjs';
 import { foldSpecIntoPrompt } from '../../../core/generation/prompt-v1.mjs';
 import {
   describeSizeDisagreement,
@@ -105,17 +106,36 @@ async function readStandardInput() {
  * Build the provider call for the selected provider. Provider selection and
  * request shaping are a composition concern, which is why they stay on this
  * side of the boundary rather than inside the run.
+ *
+ * Exported for `pixelproof retake`, which has to build attempt *n+1* exactly the
+ * way attempt *n* was built. Two copies of this shaping would agree today and
+ * drift the first time a provider gained an option, and a retake whose request
+ * differs from the original in some unnoticed way is a retake of a different
+ * question.
  */
-async function prepareGeneration({ provider, options, dimensions, verificationSpec }) {
+export async function prepareGeneration({
+  provider,
+  options,
+  dimensions,
+  verificationSpec,
+  corrections = null,
+  correctingAttempt = null,
+}) {
   if (provider === 'codex') {
     if (!options.prompt?.trim()) throw new Error('--prompt is required for the Codex provider');
     if (options.svgFile) throw new Error('--svg-file can only be used with the SVG provider');
+    // ADR 0020 §4's order, in one place: the original prompt, the same spec
+    // folding as always, and then the corrections. The generator's last words
+    // are what went wrong last time.
+    const folded = verificationSpec
+      ? foldSpecIntoPrompt(options.prompt, verificationSpec, dimensions)
+      : options.prompt;
     return {
       generate: generateWithCodex,
       request: {
-        prompt: verificationSpec
-          ? foldSpecIntoPrompt(options.prompt, verificationSpec, dimensions)
-          : options.prompt,
+        prompt: corrections === null
+          ? folded
+          : foldCorrectionsIntoPrompt(folded, corrections, { attempt: correctingAttempt }),
         outPath: options.out,
         width: dimensions.width,
         height: dimensions.height,
@@ -179,6 +199,17 @@ export async function runGenerate(argv) {
     // never costs a generation.
     const judged = resolveJudgeOptions(options, { artifact: options.out, spec });
 
+    // A retake is a corrected prompt, and the SVG provider takes markup rather
+    // than a prompt: a second attempt would reproduce the first byte for byte,
+    // spending the bound to change nothing. Refused at the front door so the
+    // state can never arise, before any generation.
+    if (judged !== null && judged.retakes > 1 && provider === 'svg') {
+      throw new Error(
+        '--retakes needs a prompt-driven provider; the svg provider is given markup, '
+          + 'so a corrected prompt could not change what it produces.',
+      );
+    }
+
     // Under `--judge`, the artifact is generated into the run directory and
     // appears at `--out` only when the run is accepted (ADR 0009 §2).
     const opened = judged === null ? null : await openJudgedRun({
@@ -188,46 +219,58 @@ export async function runGenerate(argv) {
       specPath,
       provider,
       judge: judged.judge,
+      // Everything `pixelproof retake` needs to build attempt n+1 (ADR 0020 §4).
+      prompt: options.prompt ?? null,
+      size: { width: dimensions.width, height: dimensions.height },
+      retakes: judged.retakes,
+      deadlineMs: judged.deadlineMs ?? null,
     });
     const outPath = opened === null ? options.out : attemptTarget(opened.directory, options.out);
 
-    const { generate, request } = await prepareGeneration({
-      provider,
-      options: { ...options, out: outPath },
-      dimensions,
-      verificationSpec,
-    });
+    /** One provider call plus its mechanical verification, for any attempt. */
+    const attemptOnce = async (target, corrections = null, correctingAttempt = null) => {
+      const { generate, request } = await prepareGeneration({
+        provider,
+        options: { ...options, out: target },
+        dimensions,
+        verificationSpec,
+        corrections,
+        correctingAttempt,
+      });
 
-    const { ok, verification } = await runOnce({
-      generate,
-      request,
-      onGenerated(generation) {
-        console.log(`Provider: ${provider}`);
-        console.log(`Output: ${generation.outputPath}`);
-        for (const warning of generation.warnings ?? []) printWarning(warning);
-      },
-      verify: verificationSpec
-        ? async (generation) => {
-          // Mechanical checks read pixels, so a vector-only result has nothing
-          // to inspect. Saying so is the point: a silent pass here would be the
-          // unverified-claim failure this tool exists to prevent.
-          if (!generation.outputPath.toLowerCase().endsWith('.png')) {
-            printWarning(
-              'mechanical verification needs a PNG raster; the validated SVG was kept, '
-                + 'but no raster was available to inspect.',
-            );
-            return null;
+      return runOnce({
+        generate,
+        request,
+        onGenerated(generation) {
+          console.log(`Provider: ${provider}`);
+          console.log(`Output: ${generation.outputPath}`);
+          for (const warning of generation.warnings ?? []) printWarning(warning);
+        },
+        verify: verificationSpec
+          ? async (generation) => {
+            // Mechanical checks read pixels, so a vector-only result has nothing
+            // to inspect. Saying so is the point: a silent pass here would be the
+            // unverified-claim failure this tool exists to prevent.
+            if (!generation.outputPath.toLowerCase().endsWith('.png')) {
+              printWarning(
+                'mechanical verification needs a PNG raster; the validated SVG was kept, '
+                  + 'but no raster was available to inspect.',
+              );
+              return null;
+            }
+            const verification = await verifyImage({
+              filePath: generation.outputPath,
+              spec: verificationSpec,
+              specPath,
+            });
+            printVerificationResult(verification);
+            return verification;
           }
-          const verification = await verifyImage({
-            filePath: generation.outputPath,
-            spec: verificationSpec,
-            specPath,
-          });
-          printVerificationResult(verification);
-          return verification;
-        }
-        : null,
-    });
+          : null,
+      });
+    };
+
+    const { ok, verification } = await attemptOnce(outPath);
 
     if (opened === null) return ok ? 0 : 1;
 
@@ -243,6 +286,15 @@ export async function runGenerate(argv) {
       assertions: judged.assertions,
       deadlineMs: judged.deadlineMs,
       out: options.out,
+      bound: judged.retakes,
+      // A mechanical failure needs no host, so the correction and the next
+      // generation happen here rather than being handed back to an operator
+      // (ADR 0020 §2).
+      regenerate: async ({ attempt, corrections }) => {
+        const target = attemptTarget(opened.directory, options.out, attempt);
+        const result = await attemptOnce(target, corrections, attempt - 1);
+        return { artifactPath: target, verification: result.verification };
+      },
     });
   } catch (error) {
     printGenerationError(error);
