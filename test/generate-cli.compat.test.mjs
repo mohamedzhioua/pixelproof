@@ -53,6 +53,7 @@ Options:
   --spec <file>            Fold a JSON spec into the prompt and verify it; spec dimensions win
   --svg-file <path>        SVG source for the svg provider; otherwise read stdin
   --judge host             Ask the calling agent to judge the spec's semantic assertions
+  --judge codex            Judge them here by running the Codex CLI (see below)
   --judge-deadline <dur>   How long the checklist stays answerable (default 24h)
   --retakes <n>            Maximum total attempts in a judged run; needs --judge
   --run-dir <path>         Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
@@ -80,6 +81,16 @@ Retakes:
   provider call, so honouring a bound would only change what the call costs. A rejected
   attempt leaves the run open; continue it with \`pixelproof retake --run <id>\`. Nothing
   is promoted on exhaustion.
+
+Subprocess judgement:
+  --judge codex judges here and finishes in one invocation: 0 accepted, 1 rejected,
+  never 2. --judge-deadline means nothing to it (PIXELPROOF_JUDGE_TIMEOUT_MS bounds
+  the call instead), a judge that is not installed is refused before any generation,
+  and an "unsure" verdict is a rejection, because escalation goes to a host and this
+  panel has none. Under --retakes it corrects and retakes in this same process rather
+  than leaving the run open — the verdict arrived here, so there is nobody to hand it
+  back to — which spends one generation and one judge call per attempt. Naming more
+  than one judge is refused; panels are specified but not wired.
 `;
 
 const VALID_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="#fff"/></svg>';

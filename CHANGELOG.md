@@ -4,6 +4,63 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **`--judge codex` on `generate` and `verify`** (ADR 0021). A judge registry
+  (`core/judge/registry.mjs`) separate from the provider registry — `codex` is now both a
+  provider and a judge, one vendor in two roles with two id namespaces — resolves the request
+  and runs Codex CLI as a judge **synchronously, in the same process**. The run never enters
+  `pending-judgement` and never exits 2: exit 0 is acceptance with promotion to `--out` under
+  the unchanged ADR 0009 §2 rule, exit 1 is rejection, an error, or an unresolvable `unsure`.
+  Only bundled judges are supported; an external judge is refused, and `host` is refused as a
+  judge id because it names a run state, not a registry entry.
+- `validateJudgeManifest()` in `core/contracts/judge.mjs`, which validates a judge's declared
+  capabilities and **refuses** an unknown key rather than the provider validator's drop-and-fabricate
+  behaviour — a judge manifest describes a different shape than a provider's generation
+  geometry, and reusing `validateManifest()` would hand `doctor` a report that lies about what a
+  judge can do.
+- `judge.kind` in `run.json` widens from `{ "const": "host" }` to the open enum
+  `host | subprocess | mixed`, and an additive `judge.panel[]` array records who judged. The
+  envelope stays `pixelproof.run/1`: the field keeps its name and type, and a test pins the
+  three legal values so a fourth cannot arrive unnoticed.
+- With no `host` in the panel, an `unsure` verdict that would otherwise escalate is instead
+  **rejected** as `semantic-unsure`, naming the missing escalation authority and telling the
+  operator to add `,host` to `--judge`. Re-asking the same subprocess judge is not escalation —
+  it is the same authority answering the same question a second time, which would convert "I
+  cannot tell" into a coin flip that reports as a verdict.
+- A semantic rejection from a subprocess judge with the retake bound unspent is corrected and
+  retaken **in the same process** (unlike the host path, which leaves the run open and prints
+  `pixelproof retake`): the verdict already arrived in the process that could act on it. Each
+  such retake spends one generation and one judge call, both paid, against the same `--retakes`
+  bound. `pixelproof retake` refuses a subprocess-judged run by name, naming `judge abandon` and
+  a fresh `generate` as the way to continue one that was interrupted.
+- `--judge-deadline` is refused with a subprocess-only panel: nothing stays outstanding to have
+  a deadline. The subprocess bound is `PIXELPROOF_JUDGE_TIMEOUT_MS` (default 300000 ms),
+  already implemented in `judges/codex.mjs`.
+- `pixelproof doctor` reports judges the same way it reports providers: bounded import, bounded
+  `detect`, and availability is not authentication (ADR 0016) — `codex` on `PATH` reports
+  available with `auth: unknown`, and nothing shells out to prove otherwise.
+- `generate --help` and `verify --help` gain a `Subprocess judgement:` section alongside the
+  existing `Host judgement:` one.
+
+### Not built in this slice, by decision at the gate
+
+- **A mixed panel** (`--judge codex,host`). ADR 0009 §5 already specifies its rules and this
+  slice changes none of them, but building it multiplies the state surface it touches —
+  subprocess-then-pending, an escalation authority present again, and an in-process retake
+  crossing a handoff that by definition cannot complete in-process — and none of it could be
+  proven against the real vendor before quota returns anyway. A `--judge` value naming more
+  than one judge is refused by name rather than silently reduced to its first entry.
+- **The wired path has been proven only against a fake Codex CLI.** `judges/codex.mjs` itself
+  was verified against codex-cli 0.147.0 in isolation before this slice; the generate → judge →
+  promote path this slice wires has run only against the hermetic fake-CLI seam
+  (`test/judge-codex-run.test.mjs`, `test/judge-registry.test.mjs`), because the Codex account
+  is over quota until 2026-08-18. No end-to-end run against the real vendor has happened yet,
+  and nothing here claims otherwise.
+- Scoring, external judges, and a `claude` or `gemini` judge remain unbuilt, as before.
+
 ## [0.4.0] - 2026-08-14
 
 ### Added

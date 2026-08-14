@@ -26,15 +26,18 @@ leaving judgments such as "no invented branding" to Claude's eyes.
 
 > **About `semantic`:** entries in a spec's `semantic` array are not checked by JavaScript.
 > The agent must open the produced image with its own image-reading capability and judge
-> every entry visibly. `--judge host` makes that a recorded step rather than a convention —
-> see [`pixelproof judge`](#pixelproof-judge).
+> every entry visibly, unless a subprocess judge does the looking instead. `--judge host`
+> and `--judge codex` both make that a recorded step rather than a convention — see
+> [`pixelproof judge`](#pixelproof-judge).
 
-Inside a judged run (`--judge host`), a mechanical failure is corrected and retaken by the
-tool itself, in the same process; a semantic rejection leaves the run open and names the exact
-`pixelproof retake` command to continue it. Either way the loop is bounded by `--retakes`, else
-`spec.retakes`, else one attempt — never retried forever, and nothing is promoted when the
-bound is spent. Without `--judge`, `generate` makes exactly one attempt and the spec's
-`retakes` field is not read at all. See [`pixelproof retake`](#pixelproof-retake).
+Inside a judged run, a mechanical failure is always corrected and retaken by the tool itself,
+in the same process. A semantic rejection differs by judge: under `--judge host` it leaves the
+run open and names the exact `pixelproof retake` command to continue it; under `--judge codex`
+it is corrected and retaken in the same process too, because the verdict already arrived
+there. Either way the loop is bounded by `--retakes`, else `spec.retakes`, else one attempt —
+never retried forever, and nothing is promoted when the bound is spent. Without `--judge`,
+`generate` makes exactly one attempt and the spec's `retakes` field is not read at all. See
+[`pixelproof retake`](#pixelproof-retake).
 
 ## Install
 
@@ -125,10 +128,10 @@ accepts ratios such as `1:1` and `16:9` with an absolute ratio tolerance of 0.01
 samples all four corner pixels against `expect` using per-channel `tolerance` (default 3).
 `alpha` is `opaque`, `transparent` (at least one pixel has alpha below 255), or `any`.
 `maxBytes` is an integer upper bound. An empty or absent mechanical block passes with a note.
-`retakes` bounds the total attempts inside a judged run and is read only under `--judge host`;
-without `--judge`, `--retakes` is refused on the command line and `spec.retakes` is not read at
-all — a bare `generate` makes exactly one provider call regardless of what the spec says. It
-defaults to 1 attempt when absent. See [`pixelproof retake`](#pixelproof-retake).
+`retakes` bounds the total attempts inside a judged run and is read only when `--judge` is
+given; without `--judge`, `--retakes` is refused on the command line and `spec.retakes` is not
+read at all — a bare `generate` makes exactly one provider call regardless of what the spec
+says. It defaults to 1 attempt when absent. See [`pixelproof retake`](#pixelproof-retake).
 
 ## Standalone CLI
 
@@ -146,9 +149,11 @@ node scripts/verify.mjs   --file lamp.png --spec specs/product-hero.example.json
 The package is `private`, so `pixelproof` resolves after `npm link`; in a checkout, run
 `node bin/pixelproof.mjs`.
 
-Exit codes are `0` accepted, `1` rejected or errored, and — only on the `--judge` path
-below — `2` for an outstanding judgement. **`2` is never a pass**, so a gate already written
-as "non-zero is failure" is correct without changing anything.
+Exit codes are `0` accepted, `1` rejected or errored, and — only under `--judge host` — `2`
+for an outstanding judgement. `--judge codex` never returns `2`: its verdict arrives in the
+same process, so nothing is left outstanding, and it finishes with `0` or `1` like a bare
+`generate`. **`2` is never a pass**, so a gate already written as "non-zero is failure" is
+correct without changing anything.
 
 ### `pixelproof doctor`
 
@@ -189,6 +194,33 @@ pixelproof judge submit --run <id> --results verdicts.json
 # exit 0 accepted, 1 rejected, 2 escalated to a further round
 ```
 
+`--judge codex` has no host to hand a checklist to, so it drives the Codex CLI as a judge
+**in the same process** and finishes in one invocation — there is no second command to run:
+
+```sh
+pixelproof generate --prompt "A ceramic desk lamp" --out output/lamp.png \
+  --spec specs/product-hero.example.json --judge codex
+# exit 0 accepted, 1 rejected — never 2, because nothing is left outstanding
+```
+
+`--judge codex` is a registered **judge**, a role separate from the `codex` **provider** that
+generates the image — the same vendor answers two different questions, under two different
+ids in two different registries (ADR 0021 §1). Only bundled judges are supported; a judge that
+is not installed on this machine is refused before any generation is spent, with the
+remediation printed. `--judge-deadline` is refused with a subprocess-only panel, since nothing
+stays outstanding to have a deadline — the subprocess call is bounded instead by
+`PIXELPROOF_JUDGE_TIMEOUT_MS` (default 300000 ms). A panel naming more than one judge, such as
+`--judge codex,host`, is specified (ADR 0009 §5) but refused by name in this build: it is not
+silently reduced to its first entry.
+
+Escalation needs a host to escalate *to*. With no `host` in the panel, an `unsure` verdict
+that would otherwise open a second round is instead **rejected** — recorded as
+`semantic-unsure`, with the message telling the operator to add `,host` to `--judge` if a
+human tie-breaker is wanted. A semantic rejection from `--judge codex` with the retake bound
+unspent is corrected and retaken in the same process — unlike `--judge host`, which leaves the
+run open for `pixelproof retake` — so each such retake spends one generation **and** one judge
+call, both paid, against the same `--retakes` bound.
+
 > **The artifact appears at `--out` only when the run is accepted.** Under `--judge`, the
 > generator writes into the run directory and promotes the file on acceptance. A rejected or
 > abandoned run therefore leaves **no file at `--out`** — which is the mechanical form of "an
@@ -228,22 +260,26 @@ on a retained path. Deadlines default to 24 hours and are set with `--judge-dead
 (a unit is required — a bare number is refused rather than guessed at). Nothing is swept:
 an abandoned run directory is retained, because the evidence is the point.
 
-`--judge host` needs a `.png` target and a spec with at least one `semantic` entry, and it
-refuses both up front rather than after spending a generation. Subprocess judges exist in the
-codebase but are not wired to `generate`/`verify` yet, so `host` is the only accepted value.
+Every `--judge` value — `host`, `codex`, or a comma-separated panel naming more than one —
+needs a `.png` target and a spec with at least one `semantic` entry, and refuses both up front
+rather than after spending a generation.
 
 ### `pixelproof retake`
 
-Spend another attempt on a run that a judged rejection left open. `--retakes` bounds the total
-attempts inside one judged run (`--retakes <n>`, else `spec.retakes`, else 1). It needs
-`--judge`: without one, `generate` makes exactly one provider call and honouring the bound
-would only change what that call costs.
+Spend another attempt on a run that a judged rejection left open under `--judge host`.
+`--retakes` bounds the total attempts inside one judged run (`--retakes <n>`, else
+`spec.retakes`, else 1). It needs `--judge`: without one, `generate` makes exactly one
+provider call and honouring the bound would only change what that call costs.
 
-A **mechanical** failure with the bound unspent is corrected and regenerated by `generate`
-itself, in the same process — no host is involved, so nothing has to wait. A **semantic**
-rejection is the opposite case: the two verdicts arrive in different processes, so
-`judge submit` records them, leaves the run `running`, and prints the exact command rather
-than starting a paid call nobody authorised.
+A **mechanical** failure with the bound unspent is always corrected and regenerated by
+`generate` itself, in the same process — no host is involved, so nothing has to wait. A
+**semantic** rejection depends on which judge answered: under `--judge host` the two verdicts
+arrive in different processes, so `judge submit` records them, leaves the run `running`, and
+prints the exact command rather than starting a paid call nobody authorised. Under
+`--judge codex`, the verdict already arrived in the process that could act on it, so `generate`
+retakes it there and the run never sits open — `pixelproof retake` refuses a subprocess-judged
+run by name, naming `judge abandon` and a fresh `generate` as the way to continue one that was
+interrupted.
 
 ```sh
 pixelproof retake --run <id> [--run-dir <path>] [--judge-deadline <dur>]

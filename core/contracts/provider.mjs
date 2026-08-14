@@ -27,8 +27,11 @@ export const MAX_LOG_BYTES = 256 * 1024;
 
 export const DESCRIBE_REQUEST = Object.freeze({ protocol: PROTOCOL_VERSION, operation: 'describe' });
 
-const ARTIFACT_KINDS = new Set(['raster', 'vector']);
-const ID_PATTERN = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/u;
+// Exported for the judge manifest validator (ADR 0021 §2), which enforces the
+// same id shape and the same artifact kinds over an entirely different set of
+// capabilities. Two validators, one vocabulary.
+export const ARTIFACT_KINDS = new Set(['raster', 'vector']);
+export const ID_PATTERN = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/u;
 
 function invalid(message, details) {
   return new AdapterError('INVALID_REQUEST', message, { retryable: false, details: details ?? null });

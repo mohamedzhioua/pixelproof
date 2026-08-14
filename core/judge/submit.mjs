@@ -459,8 +459,17 @@ export function foldVerdicts({ prior = [], record, response, policy = 'all' }) {
  * round 1, and it is entitled to its own escalation; passing the run-wide number
  * would silently deny every attempt after the first the escalation ADR 0009 §5
  * grants it. Callers get the right value from `roundInAttempt(run, round)`.
+ *
+ * `canEscalate` is ADR 0021 §6: escalation means escalating *to the host*, so a
+ * panel with no host has no escalation authority and an `unsure` that would
+ * escalate is a rejection instead. The result says `noEscalationAuthority` so
+ * the surface can print the reason — an operator who is told only "rejected:
+ * unsure" would have no way to know that adding `,host` to the panel is the
+ * thing that would have resolved it.
+ *
+ * @param {{canEscalate?: boolean}} options
  */
-export function decideOutcome({ checks, onUnsure = 'escalate', round = 1 }) {
+export function decideOutcome({ checks, onUnsure = 'escalate', round = 1, canEscalate = true }) {
   const failing = checks.filter((check) => check.verdict === 'fail');
   if (failing.length > 0) {
     return {
@@ -473,13 +482,17 @@ export function decideOutcome({ checks, onUnsure = 'escalate', round = 1 }) {
   const unsure = checks.filter((check) => check.verdict === 'unsure');
   if (unsure.length > 0) {
     const { escalate } = acceptanceFor('unsure', { onUnsure });
-    if (escalate && round < MAX_ROUNDS) {
+    if (escalate && round < MAX_ROUNDS && canEscalate) {
       return { outcome: 'escalate', reason: null, checks: unsure.map((check) => check.id) };
     }
     return {
       outcome: 'rejected',
       reason: OUTCOME_REASONS.semanticUnsure,
       checks: unsure.map((check) => check.id),
+      // True only when the policy asked to escalate and there was nobody to
+      // escalate to — not when `onUnsure: fail` was chosen, and not when the
+      // round bound was simply spent.
+      noEscalationAuthority: escalate && round < MAX_ROUNDS && !canEscalate,
     };
   }
 

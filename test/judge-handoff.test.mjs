@@ -679,7 +679,12 @@ test('the judge schema documents describe the envelopes the code writes', async 
     // them unwritten.
     const runSchema = await schemaFor('run.v1.json');
     const run = await readRun(fixture.directory);
-    assert.equal(runSchema.properties.judge.properties.kind.const, 'host');
+    // ADR 0021 §5 widened this from `{"const": "host"}` in place, keeping the
+    // envelope at major 1. `host` staying legal *and* still being what a host
+    // run writes is the whole argument for widening rather than bumping, so
+    // both halves are asserted; the full enum is pinned in judge-registry.test.
+    assert.equal(runSchema.properties.judge.properties.kind.enum.includes('host'), true);
+    assert.equal(run.judge.kind, 'host', 'a host run records the kind it always did');
     assert.equal(runSchema.properties.rounds.type, 'array');
 
     for (const key of runSchema.properties.rounds.items.required) {

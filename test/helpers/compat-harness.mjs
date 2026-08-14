@@ -168,6 +168,33 @@ const DEFAULT_FAKE_CODEX = `
   }
 `;
 
+/**
+ * The Windows shim the *judge's* executable resolution actually reaches.
+ *
+ * `judges/codex.mjs` spawns with `shell: false`, so a `.cmd` shim is not
+ * directly spawnable and is treated as a *marker*: the resolver then looks for
+ * the vendored `.exe` and, failing that, for the package's own Node launcher at
+ * `node_modules/@openai/codex/bin/codex.js`, which it runs through
+ * `process.execPath`. This is that launcher.
+ *
+ * It forwards `process.argv` untouched — which is the point. The provider's
+ * `.cmd` shim passes arguments through an environment variable, so a test using
+ * only that shim would never prove the judge's argv reached anything. Here the
+ * fake script sees exactly the argv `buildJudgeArgs` produced.
+ *
+ * It also **bakes in** the absolute path of the fake script rather than reading
+ * it from the environment. It has to: the judge transport forwards only its own
+ * allowlist (ADR 0007), so a launcher that needed `PIXELPROOF_FAKE_CODEX_SCRIPT`
+ * would find it stripped and fail in a way indistinguishable from a broken
+ * judge. Anything else a fake judge needs to know has to arrive the same way.
+ */
+function windowsJudgeLauncher(scriptPath) {
+  return `
+  import { pathToFileURL } from 'node:url';
+  await import(pathToFileURL(${JSON.stringify(scriptPath)}).href);
+`;
+}
+
 export async function createFakeCodex(root, scriptSource = DEFAULT_FAKE_CODEX) {
   const binDirectory = path.join(root, 'bin');
   const scriptPath = path.join(root, 'fake-codex.mjs');
@@ -181,11 +208,22 @@ export async function createFakeCodex(root, scriptSource = DEFAULT_FAKE_CODEX) {
       '@echo off\r\n"%PIXELPROOF_NODE%" "%PIXELPROOF_FAKE_CODEX_SCRIPT%"\r\nexit /b %ERRORLEVEL%\r\n',
       'utf8',
     );
+
+    // Placed beside the `.cmd` in the same PATH directory, exactly where an
+    // npm-global Codex install puts it, so the judge's resolver finds it by its
+    // real rule rather than by a rule invented for the test.
+    const launcher = path.join(binDirectory, 'node_modules', '@openai', 'codex', 'bin');
+    await mkdir(launcher, { recursive: true });
+    await writeFile(path.join(launcher, 'codex.js'), windowsJudgeLauncher(scriptPath), 'utf8');
   } else {
+    // The same shim serves both roles on POSIX — the judge's resolver returns
+    // `<dir>/codex` directly — so it bakes its paths in for the reason the
+    // Windows launcher does: a judging child receives only the allowlisted
+    // environment, and `$PIXELPROOF_NODE` would be empty inside it.
     const executable = path.join(binDirectory, 'codex');
     await writeFile(
       executable,
-      '#!/bin/sh\nexec "$PIXELPROOF_NODE" "$PIXELPROOF_FAKE_CODEX_SCRIPT" "$@"\n',
+      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)} "$@"\n`,
       'utf8',
     );
     await chmod(executable, 0o755);

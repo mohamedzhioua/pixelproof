@@ -12,10 +12,34 @@ This layer is to `core/contracts/judge.mjs` what `providers/` is to
 
 | Export | Meaning |
 | --- | --- |
-| `id` | Lowercase kebab-case identity, unique across adapters. |
+| `id` | Lowercase kebab-case identity, unique among *judges* — not across adapters. `codex` names both a provider and a judge; the two registries keep separate namespaces because one vendor in two roles is not a collision (ADR 0021 §1). |
 | `manifest` | Declared capabilities, including an `auth` record. Frozen data, never a probe. |
 | `detect(options?)` | Cheap, read-only, no network, no paid call. Returns `{ available, reason }`. |
 | `judge(request, options?)` | Takes a protocol-1 judge request, resolves with a protocol-1 judge response, or rejects with an `AdapterError` from the closed taxonomy. |
+
+## The judge registry
+
+`core/judge/registry.mjs` is a second registry, not the provider one widened. A provider's
+`manifest` is validated by `validateManifest()`, a normalizing allowlist over *generation
+geometry* (`minWidth`, `dimensionMultiple`, `seed`, `transparency`); handed a judge manifest it
+would silently discard `role`, `transport`, `auth`, `verdicts` and `constrainedOutput` and hand
+back a fabricated capability record describing image generation that no judge performs. A judge
+manifest is instead validated by `validateJudgeManifest()` in `core/contracts/judge.mjs`, which
+checks the fields judges actually declare and **refuses** an unknown key rather than dropping
+it — the same ADR 0006 policy applied here for the reason it is right anywhere: a typo in a
+capability name that is silently ignored produces a manifest that claims less than the module
+can do, and nothing ever says so.
+
+The registry accepts **built-ins only**. `discoverJudges({ builtins, external })` refuses a
+non-empty `external` with a named error rather than silently ignoring it — ADR 0004 is explicit
+that Pixelproof never auto-imports arbitrary project code, and a registration under `host` is
+refused by name because `host` is a run state, not a registry entry.
+
+`--judge codex` reaches this module by being resolved through that registry: the composition
+layer in `surfaces/cli/judged-run.mjs` imports `judges/codex.mjs` lazily (only when a name
+other than `host` is requested), hands `{ id, manifest, detect, judge }` to the registry, and
+the resulting entry is what `generate`/`verify` call. `core/` still never imports `judges/`
+(ADR 0002) — the registry only ever receives what the composition layer already imported.
 
 Three rules are not negotiable:
 

@@ -89,3 +89,25 @@ export {
   issueFirstRound,
   promoteArtifact,
 } from './handoff.mjs';
+
+// ADR 0021. The registry is here rather than beside the provider one because a
+// judge is validated by a different contract — see `registry.mjs` for why
+// reusing `validateManifest()` would put a lie in `doctor`'s report.
+export {
+  createJudgeRegistry,
+  detectJudge,
+  discoverJudges,
+  normalizeJudge,
+  probeJudges,
+  selectJudge,
+} from './registry.mjs';
+
+export {
+  JUDGE_KINDS,
+  KIND_HOST,
+  KIND_MIXED,
+  KIND_SUBPROCESS,
+  panelCanEscalate,
+  parsePanelNames,
+  resolvePanel,
+} from './panel.mjs';
