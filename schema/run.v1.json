@@ -56,7 +56,29 @@
       "type": "object",
       "description": "ADR 0009's handoff record, written when a run is judged. The authoritative per-check verdict table lives in `checks`: on escalation a round-2 verdict REPLACES the round-1 one for that check rather than joining a panel with it, and `escalatedFrom` records that it happened. Absent on a run that asked for no judge.",
       "properties": {
-        "kind": { "const": "host" },
+        "kind": {
+          "enum": ["host", "subprocess", "mixed"],
+          "description": "Who judges this run. `host` is a run state answered by a later `judge submit` (ADR 0009 §1); `subprocess` is a judge spawned and answered inside one invocation, so the run never enters `pending-judgement` and never exits 2 (ADR 0021 §3); `mixed` is both. Widened in place from `{\"const\": \"host\"}` at major 1 (ADR 0021 §5): the field keeps its name and its string type and \"host\" keeps its meaning. Treat it as an OPEN ENUM — a consumer that switches on it needs a default arm.",
+          "$comment": "The three values are pinned by test/judge-registry.test.mjs so a fourth cannot arrive unnoticed."
+        },
+        "panel": {
+          "type": "array",
+          "description": "The authorities that judged this run, in the order `--judge` named them. Absent on a run written before ADR 0021, where `kind: \"host\"` said everything there was to say about who was judging.",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind"],
+            "properties": {
+              "id": { "type": "string" },
+              "role": { "const": "judge" },
+              "trust": {
+                "type": "string",
+                "description": "`builtin` or `external` for a judge adapter (ADR 0004); `host` for the calling agent, which ADR 0009 classifies as neither."
+              },
+              "kind": { "enum": ["host", "subprocess"] }
+            },
+            "additionalProperties": true
+          }
+        },
         "policy": { "enum": ["all", "any", "majority"] },
         "onUnsure": { "enum": ["escalate", "fail"] },
         "deadlineMs": { "type": "integer", "minimum": 1 },

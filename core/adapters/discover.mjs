@@ -10,35 +10,28 @@
  * under `test/fixtures/providers/` is registered by a test with the same call
  * the real built-ins use.
  *
- * Three rules make the result deterministic:
- *
- * 1. Built-ins keep the order they were registered in. That order is a decision
- *    the caller makes once, not an accident of directory listing or hash order.
- * 2. External adapters are sorted by id, because configuration may arrive as an
- *    object whose key order is not something a user chose.
- * 3. A duplicate id is a hard error. Last-one-wins would let a third-party
- *    adapter silently shadow a built-in, which is a supply-chain problem wearing
- *    a convenience feature's clothes.
+ * The determinism and duplicate rules live in `registry.mjs`, shared with the
+ * judge registry ADR 0021 §1 adds. What stays here is the part that is specific
+ * to a *provider*: it must expose a `generate` function and a generation
+ * manifest. That split is the whole reason there are two registries — see
+ * `core/judge/registry.mjs` for why a judge cannot be validated by
+ * `validateManifest()`.
  */
 
 import { AdapterError } from '../contracts/errors.mjs';
 import { validateManifest } from '../contracts/provider.mjs';
+import {
+  TRUST_BUILTIN,
+  TRUST_EXTERNAL,
+  buildRegistry,
+  byId,
+  invalidRegistration as invalid,
+  isPlainObject,
+  isTrustClass,
+  probeEntries,
+} from './registry.mjs';
 
-/** Bundled, imported in-process, runs with this process's authority. */
-export const TRUST_BUILTIN = 'builtin';
-
-/** Third-party, executed out of process through the subprocess transport. */
-export const TRUST_EXTERNAL = 'external';
-
-const TRUST_CLASSES = new Set([TRUST_BUILTIN, TRUST_EXTERNAL]);
-
-function invalid(message, details) {
-  return new AdapterError('INVALID_REQUEST', message, { retryable: false, details: details ?? null });
-}
-
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+export { TRUST_BUILTIN, TRUST_EXTERNAL } from './registry.mjs';
 
 /**
  * Normalize one registration into a frozen entry.
@@ -49,7 +42,7 @@ function isPlainObject(value) {
  */
 export function normalizeEntry(raw, { trust = TRUST_BUILTIN } = {}) {
   if (!isPlainObject(raw)) throw invalid('A provider registration must be an object');
-  if (!TRUST_CLASSES.has(trust)) {
+  if (!isTrustClass(trust)) {
     throw invalid(`Unknown trust class "${trust}"`, { trust });
   }
 
@@ -81,36 +74,6 @@ export function normalizeEntry(raw, { trust = TRUST_BUILTIN } = {}) {
 }
 
 /**
- * Index normalized entries, rejecting duplicates and preserving order. The one
- * place a registry is built, so the duplicate rule has a single home.
- */
-function buildRegistry(normalized) {
-  const byId = new Map();
-  const ordered = [];
-
-  for (const entry of normalized) {
-    if (byId.has(entry.id)) {
-      const first = byId.get(entry.id);
-      throw invalid(
-        `Duplicate provider id "${entry.id}": already registered as ${first.trust}, offered again as ${entry.trust}`,
-        { id: entry.id, registered: first.trust, offered: entry.trust },
-      );
-    }
-    byId.set(entry.id, entry);
-    ordered.push(entry);
-  }
-
-  return Object.freeze({
-    /** Registration order, always. */
-    list: () => [...ordered],
-    ids: () => ordered.map((entry) => entry.id),
-    has: (id) => byId.has(id),
-    get: (id) => byId.get(id) ?? null,
-    size: ordered.length,
-  });
-}
-
-/**
  * Build a registry from raw registrations, all of one trust class.
  *
  * @param {Array<object>} entries
@@ -118,7 +81,7 @@ function buildRegistry(normalized) {
  */
 export function createRegistry(entries = [], { trust = TRUST_BUILTIN } = {}) {
   if (!Array.isArray(entries)) throw invalid('createRegistry requires an array of providers');
-  return buildRegistry(entries.map((entry) => normalizeEntry(entry, { trust })));
+  return buildRegistry(entries.map((entry) => normalizeEntry(entry, { trust })), { noun: 'provider' });
 }
 
 /**
@@ -136,9 +99,9 @@ export function discoverProviders({ builtins = [], external = [] } = {}) {
   const bundled = builtins.map((entry) => normalizeEntry(entry, { trust: TRUST_BUILTIN }));
   const configured = external
     .map((entry) => normalizeEntry(entry, { trust: TRUST_EXTERNAL }))
-    .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+    .sort(byId);
 
-  return buildRegistry([...bundled, ...configured]);
+  return buildRegistry([...bundled, ...configured], { noun: 'provider' });
 }
 
 /**
@@ -163,44 +126,13 @@ export function selectProvider(registry, { id, kind = null } = {}) {
   return entry;
 }
 
-function normalizeDetection(value) {
-  if (value === true) return { available: true, reason: null };
-  if (value === false || value === null || value === undefined) {
-    return { available: false, reason: null };
-  }
-  if (!isPlainObject(value)) return { available: Boolean(value), reason: null };
-  return {
-    available: value.available === true,
-    reason: typeof value.reason === 'string' ? value.reason : null,
-  };
-}
-
 /**
  * Probe every registered provider. Used by reporting surfaces (`doctor`) that
  * must distinguish available from unavailable without spending a paid call.
  *
- * A detect that throws reports unavailable with its message rather than taking
- * the whole probe down: one broken adapter must not hide the healthy ones.
- * Results come back in registry order.
+ * Results come back in registry order; a detect that throws is one unavailable
+ * row rather than a dead report (`probeEntries`).
  */
 export async function probeRegistry(registry) {
-  const results = [];
-
-  for (const entry of registry.list()) {
-    let detection;
-    try {
-      detection = normalizeDetection(await entry.detect());
-    } catch (error) {
-      detection = { available: false, reason: error?.message ?? String(error) };
-    }
-    results.push({
-      id: entry.id,
-      trust: entry.trust,
-      kinds: [...entry.kinds],
-      available: detection.available,
-      reason: detection.reason,
-    });
-  }
-
-  return results;
+  return probeEntries(registry);
 }

@@ -12,11 +12,27 @@
 
 import { AdapterError, normalizeErrorPayload } from './errors.mjs';
 import { isCheckId } from './check-id.mjs';
-import { PROTOCOL_VERSION } from './provider.mjs';
+import { ARTIFACT_KINDS, ID_PATTERN, PROTOCOL_VERSION } from './provider.mjs';
 
 export const VERDICTS = Object.freeze(['pass', 'fail', 'unsure']);
 export const CONSENSUS_POLICIES = Object.freeze(['all', 'any', 'majority']);
 export const UNSURE_POLICIES = Object.freeze(['escalate', 'fail']);
+
+/** The transports a judge may declare. Only one exists (ADR 0021 §8). */
+export const JUDGE_TRANSPORTS = Object.freeze(['subprocess']);
+
+/** Declared, never probed: `known` requires proof at zero cost (ADR 0016). */
+export const AUTH_STATES = Object.freeze(['known', 'unknown']);
+
+/**
+ * Names no judge adapter may register under (ADR 0021 §1).
+ *
+ * `host` is a *run state*, not a registry entry — ADR 0009 §1 models it as two
+ * invocations precisely because it is not a synchronous adapter. A module
+ * registering under that name would create a second thing that could disagree
+ * with the first about what `--judge host` means.
+ */
+export const RESERVED_JUDGE_IDS = Object.freeze(['host']);
 
 const VERDICT_SET = new Set(VERDICTS);
 
@@ -208,6 +224,147 @@ export function combineVerdicts(verdicts, policy = 'all') {
   }
 
   return { verdict, passes, fails, unsures, disagreement, policy };
+}
+
+/** Every key a judge manifest may carry. Anything else is refused, not dropped. */
+const MANIFEST_KEYS = new Set([
+  'protocol', 'id', 'role', 'transport', 'kinds', 'capabilities', 'auth', 'remediation',
+]);
+
+const CAPABILITY_FLAGS = Object.freeze([
+  'vision', 'attachesArtifact', 'batchesChecks', 'confidence', 'evidence', 'constrainedOutput',
+]);
+
+const CAPABILITY_KEYS = new Set([...CAPABILITY_FLAGS, 'verdicts', 'maxChecks']);
+
+function requireBooleanFlag(value, label) {
+  if (value === undefined) return false;
+  if (typeof value !== 'boolean') throw invalid(`Judge capability ${label} must be a boolean when present`, { [label]: value });
+  return value;
+}
+
+function refuseUnknownKeys(object, allowed, label, id) {
+  const unknown = Object.keys(object).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw invalid(
+      `${label} for "${id}" carries unknown field(s): ${unknown.join(', ')}. `
+        + 'A field this build does not know is refused rather than ignored, because a silently '
+        + 'dropped capability claims less than the judge can do and nothing ever says so.',
+      { id, unknown },
+    );
+  }
+}
+
+/**
+ * Validate a judge manifest as data (ADR 0021 §2).
+ *
+ * This is deliberately **not** `validateManifest()` from the provider contract.
+ * That one is a normalizing allowlist over generation geometry — `minWidth`,
+ * `dimensionMultiple`, `seed`, `transparency` — and handed a judge manifest it
+ * would discard `role`, `transport`, `auth`, `remediation` and every verdict
+ * capability, then hand back a fabricated record describing image generation
+ * that no judge performs. The bundled judge adapter says as much in a comment
+ * and declines to use it. Reusing a validator that lies about half its input
+ * would put that lie in the report `doctor` prints.
+ *
+ * Two differences from the provider validator are deliberate:
+ *
+ * 1. **Unknown keys are refused, not dropped.** ADR 0006's policy applied to a
+ *    manifest: a typo'd capability that is silently ignored produces a judge
+ *    that claims less than it can do, with nothing to say so.
+ * 2. **`verdicts` must be all three.** A judge that cannot say `unsure` has no
+ *    way to answer "I cannot tell", and ADR 0010's whole point is that it must
+ *    not have to guess instead.
+ */
+export function validateJudgeManifest(raw) {
+  const manifest = requirePlainObject(raw, 'Judge manifest');
+
+  if (manifest.protocol !== PROTOCOL_VERSION) {
+    throw invalid(
+      `Judge manifest declares protocol ${JSON.stringify(manifest.protocol ?? null)}, but this build speaks protocol ${PROTOCOL_VERSION}`,
+      { protocol: manifest.protocol ?? null },
+    );
+  }
+  if (typeof manifest.id !== 'string' || !ID_PATTERN.test(manifest.id)) {
+    throw invalid('Judge manifest id must be lowercase kebab-case', { id: manifest.id ?? null });
+  }
+  if (RESERVED_JUDGE_IDS.includes(manifest.id)) {
+    throw invalid(
+      `"${manifest.id}" is a reserved judge name: it is a run state (ADR 0009 §1), not an adapter`,
+      { id: manifest.id, reserved: [...RESERVED_JUDGE_IDS] },
+    );
+  }
+
+  refuseUnknownKeys(manifest, MANIFEST_KEYS, 'Judge manifest', manifest.id);
+
+  if (manifest.role !== 'judge') {
+    throw invalid(`Judge manifest "${manifest.id}" must declare role "judge"`, { role: manifest.role ?? null });
+  }
+  if (!JUDGE_TRANSPORTS.includes(manifest.transport)) {
+    throw invalid(
+      `Judge "${manifest.id}" must declare a transport from ${JUDGE_TRANSPORTS.join(', ')}`,
+      { transport: manifest.transport ?? null },
+    );
+  }
+
+  const kinds = Array.isArray(manifest.kinds) ? manifest.kinds : [];
+  if (kinds.length === 0 || !kinds.every((kind) => ARTIFACT_KINDS.has(kind))) {
+    throw invalid(
+      `Judge "${manifest.id}" must declare at least one kind from ${[...ARTIFACT_KINDS].join(', ')}`,
+      { kinds },
+    );
+  }
+
+  const capabilities = requirePlainObject(manifest.capabilities ?? {}, `Judge capabilities for "${manifest.id}"`);
+  refuseUnknownKeys(capabilities, CAPABILITY_KEYS, 'Judge capabilities', manifest.id);
+
+  const verdicts = Array.isArray(capabilities.verdicts) ? capabilities.verdicts : [];
+  if (verdicts.length !== VERDICTS.length || !VERDICTS.every((verdict) => verdicts.includes(verdict))) {
+    throw invalid(
+      `Judge "${manifest.id}" must speak every verdict in ${VERDICTS.join(', ')}: a judge that cannot say `
+        + '"unsure" has to guess instead, which is what the tri-state exists to prevent',
+      { verdicts },
+    );
+  }
+
+  // Absent means *undeclared*, not infinite (ADR 0005). A vendor that has not
+  // said how many checks it will answer has not promised to answer any number.
+  const maxChecks = capabilities.maxChecks ?? null;
+  if (maxChecks !== null && (!Number.isInteger(maxChecks) || maxChecks <= 0)) {
+    throw invalid(`Judge "${manifest.id}" maxChecks must be a positive integer or null`, { maxChecks });
+  }
+
+  const auth = requirePlainObject(manifest.auth ?? {}, `Judge auth for "${manifest.id}"`);
+  if (!AUTH_STATES.includes(auth.state)) {
+    throw invalid(
+      `Judge "${manifest.id}" must declare auth.state as one of ${AUTH_STATES.join(', ')}`,
+      { state: auth.state ?? null },
+    );
+  }
+
+  const remediation = manifest.remediation ?? [];
+  if (!Array.isArray(remediation) || !remediation.every((line) => typeof line === 'string')) {
+    throw invalid(`Judge "${manifest.id}" remediation must be an array of strings`, { remediation });
+  }
+
+  return Object.freeze({
+    protocol: PROTOCOL_VERSION,
+    id: manifest.id,
+    role: 'judge',
+    transport: manifest.transport,
+    kinds: Object.freeze([...new Set(kinds)]),
+    capabilities: Object.freeze({
+      ...Object.fromEntries(CAPABILITY_FLAGS.map((flag) => [flag, requireBooleanFlag(capabilities[flag], flag)])),
+      verdicts: VERDICTS,
+      maxChecks,
+    }),
+    auth: Object.freeze({
+      state: auth.state,
+      detail: typeof auth.detail === 'string' ? auth.detail : null,
+      advice: typeof auth.advice === 'string' ? auth.advice : null,
+    }),
+    remediation: Object.freeze([...remediation]),
+  });
 }
 
 /**

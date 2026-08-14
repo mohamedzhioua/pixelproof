@@ -10,10 +10,9 @@ memory, not the chat history.**
 | | |
 | --- | --- |
 | Repo | `C:\Users\User\Desktop\github\pixelproof` → `github.com/mohamedzhioua/pixelproof` (public) |
-| Released | **v0.3.0 — Evidence**, tagged from `52bac93` |
-| `main` | `52bac93`, clean, CI green on the merge (`ab0943f`) and the release commit individually |
-| Tests | **304**, zero fail, **zero todo** (280 before the ADR 0020 slice) |
-| In flight | ADR 0020 retakes — built on `feat/retakes-under-judged-run`, unreleased (§3.1) |
+| Released | **v0.4.0 — Retakes under a judged run**, `main` at `45f9fcf` |
+| Tests at `main` (before this branch) | **308**, zero fail, zero todo |
+| In flight | ADR 0021 judge registry and subprocess judges — built on `feat/judge-registry`, unreleased (§3.2). Adds two new test files (`test/judge-codex-run.test.mjs`, `test/judge-registry.test.mjs`) on top of the 308. |
 
 `npm test` runs serially on purpose (`--test-concurrency=1`) and takes roughly 1–2 minutes.
 That is expected, not a hang.
@@ -54,11 +53,11 @@ check would reject every otherwise-correct image forever.
 
 **Deliberately not built** — decided with the maintainer on 2026-08-13, not an oversight:
 
-1. **Subprocess judges are not wired.** `--judge codex` is refused with a named error. There is
-   no judge registry: `core/adapters/discover.mjs` is provider-shaped (it validates a provider
-   manifest and demands a `generate` function), so building one is new surface ADR 0009 does not
-   specify. ADR 0009 §5's mixed panel needs it. And the Codex account is over quota until
-   **2026-08-18**, so a wired subprocess judge could not have been proven end to end this week.
+1. **Subprocess judges were not wired.** `--judge codex` was refused with a named error, because
+   there was no judge registry: `core/adapters/discover.mjs` is provider-shaped (it validates a
+   provider manifest and demands a `generate` function), so building one was new surface ADR
+   0009 did not specify. ADR 0021 (§3.2 below) built the registry and wired `--judge codex`; the
+   mixed panel it also needs remains unbuilt.
 2. **A mechanical failure under `--judge host` rejects immediately and writes no checklist.**
    Both tiers are hard gates (ADR 0011), so spending a host round on an already-rejected
    artifact could only produce the confusing case where every assertion passes and the run is
@@ -127,6 +126,55 @@ suite go red:
 - `test/retake-cli.test.mjs` drives the real binary with a counting fake Codex that serves a
   different image per call, so the correction really is shown to reach the provider's prompt.
 
+## 3.2 What the judge registry slice built (ADR 0021), and what it deliberately did not
+
+**Built, on `feat/judge-registry`:**
+
+- `core/judge/registry.mjs`, a second registry rather than the provider one widened — `codex` is
+  now a provider *and* a judge, one vendor in two roles with two id namespaces. The indexing,
+  ordering and duplicate rules are shared with the provider registry via
+  `core/adapters/registry.mjs`; each role keeps its own normalizer, which is the half that
+  actually differs. `host` is refused as a judge id because it names a run state, not a
+  registry entry.
+- `validateJudgeManifest()` in `core/contracts/judge.mjs`. Unlike `validateManifest()`, it
+  refuses an unknown key rather than dropping it, because a judge manifest describes a
+  different shape than generation geometry and silently discarding `role`, `transport`,
+  `verdicts` or `constrainedOutput` would hand `doctor` a fabricated capability record.
+- `--judge codex` on `generate` and `verify`, wired through the registry in
+  `surfaces/cli/judged-run.mjs`. It runs the Codex CLI as a judge **synchronously, in the same
+  process**: never `pending-judgement`, never exit 2. Exit 0 accepted with promotion to `--out`,
+  exit 1 rejected or errored.
+- A judge not installed is refused before any generation is spent, with remediation. With no
+  `host` in the panel, an `unsure` that would escalate is instead rejected as `semantic-unsure`,
+  naming the missing escalation authority. A subprocess semantic rejection retakes in the same
+  process when `--retakes` leaves the bound unspent — unlike the host path, which leaves the run
+  open. `pixelproof retake` refuses a subprocess-judged run by name.
+- `--judge-deadline` refused with a subprocess-only panel; the subprocess bound is
+  `PIXELPROOF_JUDGE_TIMEOUT_MS` (already in `judges/codex.mjs`, default 300000 ms).
+- `run.json`'s `judge.kind` widened in place to the open enum `host | subprocess | mixed`, plus
+  an additive `judge.panel[]`. The envelope stays `pixelproof.run/1`.
+- `doctor` reports judges the way it reports providers: bounded import, bounded `detect`,
+  availability is not authentication.
+
+**Deliberately not built** — decided at the gate, not an oversight:
+
+1. **A mixed panel** (`--judge codex,host`). ADR 0009 §5 already specifies its rules; building
+   it multiplies the state surface (subprocess-then-pending, an escalation authority present
+   again, an in-process retake crossing a handoff that cannot complete in-process) and none of
+   it could be proven against the real vendor this week anyway. A `--judge` value naming more
+   than one judge is refused by name, not silently reduced to its first entry.
+2. **External (third-party) judges.** The registry accepts built-ins only; `discoverJudges`
+   refuses a non-empty `external` with a named error.
+3. **Scoring.** Still unbuilt and untouched by this slice.
+
+**Proven only against a fake Codex CLI, not the real one.** `judges/codex.mjs` itself was
+verified against codex-cli 0.147.0 in isolation before this slice. The *wired* path this slice
+built — generate, run directory, judge call, fold, accept, promote to `--out` — has run only
+against the hermetic fake-CLI seam in `test/judge-codex-run.test.mjs` and
+`test/judge-registry.test.mjs`, because the Codex account is over quota until **2026-08-18**. No
+end-to-end run against the real vendor has happened, and nothing in this repository's docs
+should say otherwise until that run happens and its receipt is recorded.
+
 ## 4. Open decisions — maintainer's, not yours to take silently
 
 1. **ADR 0013 should probably be split.** Its colour-science half is implemented and validated
@@ -155,17 +203,20 @@ comparison (paste in the new output) still fails if an old line was reworded on 
 
 In rough order of value:
 
-1. **The judge registry and `--judge codex`**, once quota returns (2026-08-18) — with ADR 0009
-   §5's mixed panel and `combineVerdicts` at submit time over the full panel.
-2. **Contact sheets across attempts** (brief §5). Possible for the first time now that a run
+1. **Prove `--judge codex` end to end against the real Codex CLI**, once quota returns
+   (2026-08-18), and record the receipt before any doc claims it works end to end. The registry
+   and single-judge wiring are built (§3.2); this is the one thing they still owe.
+2. **The mixed panel** (`--judge codex,host`), with ADR 0009 §5's rules and `combineVerdicts` at
+   submit time over the full panel. Specified in ADR 0021 §10, deliberately not built there.
+3. **Contact sheets across attempts** (brief §5). Possible for the first time now that a run
    can hold more than one attempt, and explicitly out of ADR 0020's scope.
-3. **Scoring**, which is what a best-attempt promotion would need before it could exist. It
+4. **Scoring**, which is what a best-attempt promotion would need before it could exist. It
    would also need an amendment to ADR 0009 §2; a default that quietly hands back an unverified
    image is not the shortcut.
-4. **A release** for ADR 0020, once its PR is merged and CI is green on the merge commit.
+5. **A release** for ADR 0021, once its PR is merged and CI is green on the merge commit.
 
-Released on 2026-08-14: **v0.3.0 — Evidence**, the first Phase 2 work reachable from the CLI.
-ADR 0020's retakes are built and unreleased on `feat/retakes-under-judged-run` (§3.1).
+Released on 2026-08-14: **v0.4.0 — Retakes under a judged run**. ADR 0021's judge registry and
+`--judge codex` are built and unreleased on `feat/judge-registry` (§3.2).
 
 ## 6. Model routing — maintainer's standing instruction (2026-08-13)
 
@@ -235,5 +286,6 @@ Refusing to ship is a valid, and sometimes the correct, outcome. Three examples 
 text-likelihood detection was **measured and refused** because a heading on flat artwork scores
 indistinguishably from an empty frame, so a "no text" assertion would be marked satisfied with
 text plainly visible; a duplicate threshold was refused because the corpus that would justify it
-does not exist yet; and this slice refused to wire a subprocess judge it could not prove end to
-end. Every refusal is recorded with its evidence.
+does not exist yet; and ADR 0021 built the single-judge `--judge codex` path while refusing the
+mixed panel it also specifies, because that panel could not be proven against the real vendor
+this week either. Every refusal is recorded with its evidence.

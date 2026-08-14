@@ -40,6 +40,7 @@ import {
   writePendingRecord,
   writeResultRecord,
 } from './pending.mjs';
+import { panelCanEscalate } from './panel.mjs';
 import { boundOf, hasRetakeLeft, nextAttemptNumber, retakesLeft } from './retake.mjs';
 import {
   OUTCOME_REASONS,
@@ -89,6 +90,20 @@ function roundSummary(record, checks) {
  * verdicts forward would let a verdict about a file that is no longer the
  * subject decide a run — the exact confusion ADR 0009 §1 exists to prevent.
  * Attempt *n*'s verdicts stay where they were written, in `attempt-<n>.json`.
+ *
+ * ## `pending: false` — the subprocess round (ADR 0021 §3, §5)
+ *
+ * A subprocess judge is a call, not a state. Its round leaves exactly the same
+ * evidence — the request file is written *before* the judge is spawned, so the
+ * question that crossed is on disk whatever the answer turns out to be — but the
+ * run stays `running` and never enters `pending-judgement`. Nothing is
+ * outstanding, because the answer arrives in this process.
+ *
+ * The record's `nonce` is written and is **inert** on that path. It proves which
+ * pending file a submitter read, and there is no submitter. `judge submit`
+ * cannot reach such a round at all: the run is not `pending-judgement`, so the
+ * state machine refuses it with `PENDING_NOT_OPEN`. One closed door, enforced by
+ * the machine, rather than a second rule about which envelopes may be answered.
  */
 export async function issueFirstRound(directory, {
   run,
@@ -104,6 +119,9 @@ export async function issueFirstRound(directory, {
   pixelproofVersion = null,
   attempt = 1,
   round = 1,
+  kind = HOST_JUDGE,
+  panel = null,
+  pending = true,
   now = new Date(),
 }) {
   const issuedAt = now.toISOString();
@@ -131,7 +149,10 @@ export async function issueFirstRound(directory, {
   await recordRunFields(directory, {
     fields: {
       judge: {
-        kind: HOST_JUDGE,
+        kind,
+        // Absent on a run opened before ADR 0021, where `kind: "host"` said
+        // everything there was to say about who was judging.
+        ...(panel === null ? {} : { panel }),
         policy,
         onUnsure,
         deadlineMs,
@@ -144,6 +165,8 @@ export async function issueFirstRound(directory, {
       ],
     },
   }, { now });
+
+  if (!pending) return { record, file };
 
   await transitionRun(directory, PENDING_JUDGEMENT, {
     reason: {
@@ -229,8 +252,25 @@ export async function issueEscalationRound(directory, {
  * marked `pending-judgement` with its verdicts on disk rather than a run that
  * says it is between attempts with the last one's judgement missing.
  *
+ * ## Both judge kinds arrive here (ADR 0021 §4)
+ *
+ * The host path reaches this after `judge submit`'s identity checks; a
+ * subprocess judge reaches it directly, in the same process, with no identity
+ * check because there is no second process whose claim needs proving. What
+ * happens to a set of verdicts is decided **once**, here. Two implementations
+ * that agree today would be free to drift, and the drift would be invisible
+ * until an artifact was accepted on one path that the other would have rejected.
+ *
+ * Two things vary by kind, and both are read from the run record rather than
+ * assumed:
+ *
+ * - **who answered** (`judgeId`), which `attempt-<n>.json` records; and
+ * - **whether an `unsure` may escalate**, which is `panelCanEscalate` on the
+ *   recorded panel (ADR 0021 §6).
+ *
  * @returns {Promise<{outcome: 'accepted'|'rejected'|'escalated'|'retakeable', reason: string|null,
- *   checks: object[], record?: object, run: object, attempt?: number}>}
+ *   checks: object[], record?: object, run: object, attempt?: number,
+ *   noEscalationAuthority?: boolean}>}
  */
 export async function applySubmission(directory, {
   run,
@@ -238,6 +278,7 @@ export async function applySubmission(directory, {
   record,
   response,
   attempt,
+  judgeId = HOST_JUDGE,
   pixelproofVersion = null,
   now = new Date(),
 }) {
@@ -278,10 +319,13 @@ export async function applySubmission(directory, {
     // Attempt-relative, never run-wide: attempt 2's first round is run round 3
     // and is still entitled to the one escalation ADR 0009 §5 grants an attempt.
     round: record.roundInAttempt ?? roundInAttempt(run, record.round),
+    // Read from the recorded panel, so a `judge submit` arriving in a later
+    // process reaches the same answer as the process that issued the round.
+    canEscalate: panelCanEscalate(judge),
   });
 
   await recordAttemptSemantic(directory, attempt, {
-    judge: HOST_JUDGE,
+    judge: judgeId,
     policy,
     round: record.round,
     checks,
@@ -338,14 +382,23 @@ export async function applySubmission(directory, {
   // spending a generation to answer a broken judge would correct the wrong
   // thing.
   if (decision.outcome === 'rejected' && hasRetakeLeft(recorded)) {
-    const nextRun = await transitionRun(directory, RUNNING, {
-      reason: {
-        code: OUTCOME_REASONS.retakeAvailable,
-        message: `attempt ${attempt} rejected (${decision.reason}); `
-          + `${retakesLeftMessage(recorded)} — pixelproof retake --run ${run.runId}`,
-      },
-      now,
-    });
+    // A subprocess run is **already** `running`: it never paused, because its
+    // verdict arrived in this process (ADR 0021 §3). There is nothing to
+    // un-pause, `running -> running` is not an edge the machine has, and
+    // recording `retake-available` would be false twice over — the run is not
+    // waiting for an operator, and `listStalledRuns` counts exactly that reason,
+    // so `doctor` would report an orphan during ordinary operation.
+    const paused = recorded.state === PENDING_JUDGEMENT;
+    const nextRun = paused
+      ? await transitionRun(directory, RUNNING, {
+        reason: {
+          code: OUTCOME_REASONS.retakeAvailable,
+          message: `attempt ${attempt} rejected (${decision.reason}); `
+            + `${retakesLeftMessage(recorded)} — pixelproof retake --run ${run.runId}`,
+        },
+        now,
+      })
+      : recorded;
 
     return {
       outcome: 'retakeable',
@@ -353,6 +406,7 @@ export async function applySubmission(directory, {
       checks,
       run: nextRun,
       attempt: nextAttemptNumber(nextRun),
+      noEscalationAuthority: decision.noEscalationAuthority === true,
     };
   }
 
@@ -371,6 +425,12 @@ export async function applySubmission(directory, {
       message: decision.outcome === 'accepted'
         ? `every semantic assertion passed under the ${policy} policy`
         : `${decision.checks.length} assertion(s) did not pass: ${decision.checks.join(', ')}`
+          + (decision.noEscalationAuthority === true
+            // Named on the record, not only printed: an operator reading the
+            // report months later has to be able to see that the run died for
+            // want of an escalation authority rather than on the artifact.
+            ? '; unsure, and no escalation authority is configured for this panel (ADR 0021 §6)'
+            : '')
           + (exhausted
             ? `; the retake bound of ${boundOf(recorded)} is spent and nothing is promoted on exhaustion`
             : ''),
@@ -379,7 +439,13 @@ export async function applySubmission(directory, {
     now,
   });
 
-  return { outcome: decision.outcome, reason: reasonCode, checks, run: finalised };
+  return {
+    outcome: decision.outcome,
+    reason: reasonCode,
+    checks,
+    run: finalised,
+    noEscalationAuthority: decision.noEscalationAuthority === true,
+  };
 }
 
 /** "2 attempts left" / "1 attempt left" — the tail of the retake message. */

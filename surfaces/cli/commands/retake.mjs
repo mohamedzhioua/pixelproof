@@ -29,6 +29,7 @@ import path from 'node:path';
 
 import { correctionsFor } from '../../../core/generation/correction.mjs';
 import {
+  HOST_JUDGE,
   PendingError,
   boundOf,
   openRetakeableRun,
@@ -136,6 +137,20 @@ export async function runRetake(argv = [], { output = defaultOutput } = {}) {
     const opened = await openRetakeableRun({ runId: options.run, runDir: options.runDir ?? null });
     const { run, directory, attempt } = opened;
     const plan = generationPlan(run, { runId: opened.runId });
+
+    // A subprocess-judged run never waits for an operator: its verdict arrives
+    // in the process that generated the attempt, so a rejection is corrected and
+    // retaken there (ADR 0021 §7). Reaching this command means the run was
+    // interrupted, and resuming it would mean re-judging attempt n+1 through a
+    // registry this command does not build. Refused by name rather than resumed
+    // as if it were a host run, which would issue a checklist nobody asked for.
+    const judgedBy = run.judge?.kind ?? HOST_JUDGE;
+    if (judgedBy !== HOST_JUDGE) {
+      throw new Error(
+        `Run ${opened.runId} is judged by a ${judgedBy} panel, which retakes inside \`generate\` rather than here. `
+          + 'Close it with `pixelproof judge abandon` and run `generate` again.',
+      );
+    }
 
     // The spec is re-read rather than remembered: the checklist for the new
     // attempt is built from it, and a spec that moved under the run must change

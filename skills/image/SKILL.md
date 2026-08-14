@@ -22,13 +22,15 @@ provided as `PIXELPROOF_ROOT`).
    spec exists, invoke the `pixelproof:spec` skill (or follow that skill's interview and JSON
    format) and write `specs/<name>.json`. Do not invent consequential product constraints
    when a brief question would resolve them.
-2. Decide whether this generation is judged. **The retake bound is enforced by the tool, not
-   by counting here, and only applies under `--judge host`.** Pass `--retakes <n>`, or omit it
-   and let the tool read `spec.retakes`, defaulting to a single attempt when neither is given.
-   Without `--judge`, `--retakes` is refused and `spec.retakes` is never read at all — a bare
-   `generate` makes exactly one provider call regardless of what the spec says. Use
-   `--judge host` whenever the spec's `semantic` entries need to be recorded evidence, or
-   whenever the retake bound should apply at all.
+2. Decide whether this generation is judged, and by whom. **The retake bound is enforced by
+   the tool, not by counting here, and only applies with `--judge`.** Pass `--retakes <n>`, or
+   omit it and let the tool read `spec.retakes`, defaulting to a single attempt when neither is
+   given. Without `--judge`, `--retakes` is refused and `spec.retakes` is never read at all — a
+   bare `generate` makes exactly one provider call regardless of what the spec says. Use
+   `--judge host` whenever the spec's `semantic` entries need to be recorded evidence and this
+   host is the one reading the image; use `--judge codex` when the Codex CLI itself should read
+   and judge the image instead — it runs in the same process and never hands you a checklist to
+   answer, so **skip straight to step 7** rather than following **Recording the semantic tier**.
 3. Generate the first attempt:
 
    ```sh
@@ -37,8 +39,10 @@ provided as `PIXELPROOF_ROOT`).
 
    A non-zero exit without `--judge` may mean the image was created but failed its automatic
    mechanical gate; inspect the report and the file, do not discard the evidence. Under
-   `--judge`, exit 2 means a checklist was written and no verdict exists yet — go to
-   **Recording the semantic tier** below.
+   `--judge host`, exit 2 means a checklist was written and no verdict exists yet — go to
+   **Recording the semantic tier** below. Under `--judge codex`, there is no checklist: the
+   command exits 0 accepted or 1 rejected, and the correction and retake (if any) already
+   happened before it returned — go to step 7.
 4. Read every row of the mechanical table. `FAIL` is a failed tier. `SKIP` means an optional
    decoder was unavailable: report that criterion as unverified rather than quietly calling it
    a pass, and do not spend a retake on it, because another image cannot repair the
@@ -82,6 +86,10 @@ provided as `PIXELPROOF_ROOT`).
    is no ranking function the tool can appeal to, so it never picks a "best" attempt for you.
 
 ## Recording the semantic tier
+
+This section is for `--judge host` only. `--judge codex` does not use it: the Codex CLI reads
+and judges the image itself, in the same process as `generate`, so there is no checklist for
+this host to answer and no second command to run.
 
 `--judge host` turns step 5 into two invocations that never block on each other. This exists
 because the blocking shape is impossible: the agent that ran `generate` is the only entity
@@ -143,8 +151,10 @@ Rules that are enforced, not advisory:
 
 Dropping `--judge` remains the right choice for a quick single asset that needs no recorded
 semantic evidence: `generate` then makes exactly one provider call, `--retakes` is refused,
-and `spec.retakes` is not read. Use `--judge host` whenever the verdicts need to be evidence
-or the retake bound should apply.
+and `spec.retakes` is not read. Use `--judge host` whenever this host must be the one to read
+and record the verdicts. Use `--judge codex` when the Codex CLI reading and judging the image
+itself is acceptable — it is a paid call this host does not have to wait on or answer for, and
+it spends up to `--retakes` generations plus that many judge calls on its own.
 
 ## Receipt
 
@@ -154,5 +164,5 @@ Finish with a compact receipt containing:
 - the correction applied for each retake (printed by the tool, or read from the run's report);
 - the mechanical verdict, including skipped checks;
 - every semantic criterion and its final verdict;
-- the run id and its final state when `--judge host` was used;
+- the run id and its final state when `--judge host` or `--judge codex` was used;
 - the selected file and overall verdict (`PASS`, `FAIL`, or `PARTIALLY VERIFIED`).

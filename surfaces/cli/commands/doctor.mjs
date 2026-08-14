@@ -286,6 +286,73 @@ export function describeCapabilities(capabilities) {
  * registration, which is how a per-provider bound is obtained without touching
  * `core/`.
  */
+/**
+ * The judge modules this build bundles, probed the same way (ADR 0021 §9).
+ *
+ * Separate from `BUILTIN_LOADERS` because judges are a separate registry with a
+ * separate manifest validator — a judge run through `validateManifest()` would
+ * be reported with a fabricated capability record describing image generation it
+ * never performs, which is a lie in a diagnostic.
+ */
+const BUILTIN_JUDGE_LOADERS = Object.freeze([
+  { id: 'codex', load: () => import('../../../judges/codex.mjs') },
+]);
+
+/**
+ * The default judge probe.
+ *
+ * Same discipline as the provider probe, and for the same reasons: each import
+ * and each `detect` is bounded, so a judge module that throws or wedges on load
+ * becomes one unavailable row instead of taking the report down.
+ *
+ * **Availability is not authentication** (ADR 0016). A judge on PATH reports
+ * available with `auth: unknown`; nothing here shells out to find out whether
+ * its subscription will answer, because the only ways to know are a network call
+ * or a paid call, and a judge that claims "ready" and then fails at the first
+ * call is the failure mode this project exists to prevent.
+ */
+export async function defaultJudgeProbe(timeoutMs) {
+  const { discoverJudges, probeJudges } = await import('../../../core/judge/registry.mjs');
+
+  const registrations = [];
+  const failures = [];
+
+  for (const { id, load } of BUILTIN_JUDGE_LOADERS) {
+    const loaded = await boundedProbe(load, timeoutMs, `loading judge "${id}"`);
+    if (!loaded.ok) {
+      failures.push({ id, trust: 'builtin', kinds: [], available: false, reason: loaded.error, manifest: null });
+      continue;
+    }
+
+    const module = loaded.value;
+    registrations.push({
+      id,
+      manifest: module.manifest,
+      judge: module.judge,
+      detect: async () => {
+        const detected = await boundedProbe(
+          async () => (typeof module.detect === 'function' ? module.detect() : false),
+          timeoutMs,
+          `detecting judge "${id}"`,
+        );
+        return detected.ok ? detected.value : { available: false, reason: detected.error };
+      },
+    });
+  }
+
+  // A malformed manifest fails the whole registry rather than one row: it is a
+  // bug in this repository's own bundled module, not an environment problem, and
+  // hiding it behind an "unavailable" row would be the wrong diagnosis.
+  const registry = discoverJudges({ builtins: registrations });
+  const probed = await probeJudges(registry);
+  const manifests = new Map(registrations.map((entry) => [entry.id, registry.get(entry.id).manifest]));
+
+  return [
+    ...probed.map((row) => ({ ...row, manifest: manifests.get(row.id) ?? null })),
+    ...failures,
+  ];
+}
+
 export async function defaultProviderProbe(timeoutMs) {
   // Imported lazily so this module stays loadable (and `--help` stays instant)
   // even if a provider module is broken.
@@ -408,6 +475,35 @@ async function collectProviders({ probe, authProbe, timeoutMs }) {
   return { rows, error: null };
 }
 
+/**
+ * Judge rows (ADR 0021 §9).
+ *
+ * The authentication state is read from the *manifest*, never probed. A judge
+ * declares what it can honestly say about its own login — for a CLI whose
+ * subscription lives behind a network call, that is `unknown` — and `doctor`
+ * repeats the declaration rather than improving on it.
+ */
+async function collectJudges({ probe, timeoutMs }) {
+  const answer = await boundedProbe(probe, timeoutMs, 'judge detection');
+  if (!answer.ok) return { rows: [], error: answer.error };
+  if (!Array.isArray(answer.value)) {
+    return { rows: [], error: 'the judge probe did not return a list of judges' };
+  }
+
+  return {
+    rows: answer.value.map((raw) => ({
+      id: String(raw?.id ?? 'unknown'),
+      trust: raw?.trust ?? 'builtin',
+      kinds: Array.isArray(raw?.kinds) ? [...raw.kinds] : [],
+      available: raw?.available === true,
+      reason: typeof raw?.reason === 'string' ? raw.reason : null,
+      auth: normaliseAuth(raw?.manifest?.auth ?? null),
+      remediation: [...(raw?.manifest?.remediation ?? [])],
+    })),
+    error: null,
+  };
+}
+
 async function collectDecoder({ probe, timeoutMs }) {
   const answer = await boundedProbe(probe, timeoutMs, 'the sharp decoder probe');
   const available = answer.ok && Boolean(answer.value?.sharp);
@@ -479,16 +575,24 @@ export async function collectReport({
   runDir = null,
 } = {}) {
   const providerProbe = probes?.providers ?? (() => defaultProviderProbe(timeoutMs));
+  const judgeProbe = probes?.judges ?? (() => defaultJudgeProbe(timeoutMs));
   const decoderProbe = probes?.decoder ?? loadSharpDecoder;
   const authProbe = probes?.auth ?? defaultAuthProbe;
   const pendingProbe = probes?.pending ?? (() => listPendingRuns({ runDir }));
   const stalledProbe = probes?.stalled ?? (() => listStalledRuns({ runDir }));
 
   const providers = await collectProviders({ probe: providerProbe, authProbe, timeoutMs });
+  const judges = await collectJudges({ probe: judgeProbe, timeoutMs });
   const decoder = await collectDecoder({ probe: decoderProbe, timeoutMs });
   const pending = await collectPending({ probe: pendingProbe, stalledProbe, timeoutMs });
 
   const availableIds = providers.rows.filter((row) => row.available).map((row) => row.id);
+  const availableJudges = judges.rows.filter((row) => row.available).map((row) => row.id);
+  // Unchanged on purpose: `ok` still means "something can be generated". A
+  // missing judge degrades what can be *verified*, and `--judge` refuses at the
+  // front door when one is asked for and absent (ADR 0021 §3), so calling the
+  // whole environment unusable over it would be a worse diagnosis than the
+  // refusal the operator will actually meet.
   const ok = availableIds.length > 0;
 
   return {
@@ -498,12 +602,17 @@ export async function collectReport({
     timeoutMs,
     providers: providers.rows,
     providerProbeError: providers.error,
+    judges: judges.rows,
+    judgeProbeError: judges.error,
     decoder,
     pending,
     summary: {
       providersAvailable: availableIds.length,
       providersTotal: providers.rows.length,
       availableIds,
+      judgesAvailable: availableJudges.length,
+      judgesTotal: judges.rows.length,
+      availableJudgeIds: availableJudges,
       degraded: !decoder.available,
       verdict: ok
         ? (decoder.available ? 'usable' : 'usable (degraded)')
@@ -598,6 +707,44 @@ export function renderReport(report) {
   }
 
   lines.push('');
+  lines.push(`Judges (${report.summary.judgesAvailable} of ${report.summary.judgesTotal} available)`);
+
+  if (report.judgeProbeError) {
+    lines.push(field('error', report.judgeProbeError));
+  }
+
+  if (report.judges.length === 0 && !report.judgeProbeError) {
+    lines.push('    No judges are registered; --judge host is still available.');
+  }
+
+  for (const judge of report.judges) {
+    lines.push('');
+    lines.push(`  ${judge.id} [${judge.available ? 'available' : 'unavailable'}]`);
+    if (!judge.available && judge.reason) {
+      lines.push(field('reason', judge.reason));
+    }
+    const authDetail = judge.auth.detail ? ` - ${judge.auth.detail}` : '';
+    lines.push(field('auth', `${AUTH_LABEL[judge.auth.state]}${authDetail}`));
+    lines.push(field('judges', judge.kinds.length > 0 ? judge.kinds.join(', ') : 'none declared'));
+    if (judge.auth.advice) {
+      lines.push(field('note', judge.auth.advice));
+    }
+    if (!judge.available) {
+      judge.remediation.forEach((step, index) => {
+        lines.push(index === 0 ? field('fix', step) : continuation(step));
+      });
+    }
+  }
+
+  lines.push('');
+  lines.push('  host [available]');
+  // ADR 0009 §6: host availability is *declared*, never guessed. Saying "there
+  // is probably an agent out there" would produce pending runs nobody is
+  // listening for, so this row states the condition rather than a verdict.
+  lines.push(field('auth', 'not applicable - the calling agent judges with its own capability'));
+  lines.push(field('note', '--judge host writes a checklist and exits 2; answer it with `pixelproof judge submit`'));
+
+  lines.push('');
   lines.push('Decoder');
   lines.push(field(
     'sharp',
@@ -627,6 +774,12 @@ export function renderReport(report) {
     report.decoder.available
       ? 'full - every mechanical check can run'
       : `degraded - ${CHECKS_REQUIRING_DECODER.join(' and ')} will report SKIP, not PASS`,
+  ));
+  lines.push(field(
+    'judges',
+    report.summary.judgesAvailable > 0
+      ? `${report.summary.judgesAvailable} available (${report.summary.availableJudgeIds.join(', ')}), plus host`
+      : 'none installed; --judge host still works, and --judge <name> is refused rather than skipped',
   ));
   lines.push(field('judgements', describePending(report.pending)));
   lines.push(field('verdict', report.summary.verdict));

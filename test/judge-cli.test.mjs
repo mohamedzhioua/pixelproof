@@ -399,9 +399,29 @@ test('--judge refuses what it cannot honestly judge, before doing any work', asy
   try {
     const cases = [
       {
-        args: ['--judge', 'codex'],
-        expect: /--judge must be one of host, not "codex"/,
-        why: 'subprocess judges are built but not wired to this command yet',
+        args: ['--judge', 'nobody'],
+        expect: /No judge is registered under "nobody"/,
+        why: 'an unknown judge names what is registered rather than guessing',
+      },
+      {
+        // ADR 0021 §10. Refused by name, never silently reduced to one member: a
+        // run that quietly dropped a judge would report an artifact as judged by
+        // authorities that never saw it.
+        args: ['--judge', 'codex,host'],
+        expect: /mixed panel, which is specified[\s\S]*but not wired yet/,
+        why: 'a mixed panel is specified and not built',
+      },
+      {
+        // ADR 0021 §10 again, from the other side: two subprocess judges is
+        // still a panel, and the refusal must not depend on `host` being named.
+        args: ['--judge', 'codex,codex-two'],
+        expect: /mixed panel, which is specified[\s\S]*but not wired yet/,
+        why: 'panel size is what is refused, not the presence of the host',
+      },
+      {
+        args: ['--judge', 'codex,codex'],
+        expect: /names "codex" twice/,
+        why: 'a judge asked twice is one authority, not a second opinion',
       },
       {
         args: ['--judge', 'host', '--judge-deadline', '3600'],

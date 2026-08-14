@@ -37,6 +37,7 @@ Options:
   --json              Print a machine-readable result object
   --strict            Treat skipped checks as failures
   --judge host        Ask the calling agent to judge the spec's semantic assertions
+  --judge codex       Judge them here by running the Codex CLI (see below)
   --judge-deadline    How long the checklist stays answerable (default 24h)
   --run-dir <path>    Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help          Show this help
@@ -46,6 +47,14 @@ Host judgement:
   pass. Answer it with \`pixelproof judge submit\`. Needs a .png and a spec with at
   least one "semantic" entry. --judge-deadline takes a duration such as 6h or 90m;
   a unit is required, because a bare number could be seconds or milliseconds.
+
+Subprocess judgement:
+  --judge codex runs the judge here and finishes in one invocation: 0 accepted,
+  1 rejected. It never exits 2, because nothing is left outstanding, and
+  --judge-deadline means nothing to it (PIXELPROOF_JUDGE_TIMEOUT_MS bounds the
+  call instead). A judge that is not installed is refused before any work.
+  An "unsure" verdict is a rejection here: escalation goes to a host, and this
+  panel has none. Naming more than one judge is refused; panels are not wired.
 `;
 
 const RESULT_FIELDS = [

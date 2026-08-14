@@ -22,6 +22,7 @@ the decision state, not implementation progress.
 | [0017 — Package and surface distribution](./0017-package-and-surface-distribution.md) | User-Challenge | Deferred |
 | [0019 — Degraded SVG rasterisation semantics](./0019-degraded-svg-rasterisation-semantics.md) | User-Challenge | Accepted |
 | [0020 — Retakes under a judged run](./0020-retakes-under-a-judged-run.md) | User-Challenge | Accepted |
+| [0021 — Judge registry and subprocess judges](./0021-judge-registry-and-subprocess-judges.md) | User-Challenge | Accepted |
 
 The macOS CI affordability decision is part of ADR 0001 because it changes release scope, not
 runtime architecture. The duplicate/pHash corpus and threshold question is deferred in ADR 0013.

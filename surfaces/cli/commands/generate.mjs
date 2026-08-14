@@ -197,7 +197,7 @@ export async function runGenerate(argv) {
 
     // Validated before a provider is invoked, so a target the host cannot judge
     // never costs a generation.
-    const judged = resolveJudgeOptions(options, { artifact: options.out, spec });
+    const judged = await resolveJudgeOptions(options, { artifact: options.out, spec });
 
     // A retake is a corrected prompt, and the SVG provider takes markup rather
     // than a prompt: a second attempt would reproduce the first byte for byte,
@@ -289,6 +289,7 @@ export async function runGenerate(argv) {
       specPath,
       assertions: judged.assertions,
       deadlineMs: judged.deadlineMs,
+      panel: judged.panel,
       out: options.out,
       // A mechanical failure needs no host, so the correction and the next
       // generation happen here rather than being handed back to an operator
