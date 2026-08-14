@@ -520,6 +520,36 @@ export async function recordAttemptSemantic(directory, number, semantic, { now }
   return next;
 }
 
+/**
+ * Read every attempt record the run names, for the report.
+ *
+ * ADR 0020 §7's report has to list each attempt "with its mechanical table and
+ * its verdicts", and both live in `attempt-<n>.json` rather than in `run.json`'s
+ * summary. The reading happens here so `buildReport` stays pure.
+ *
+ * A record that is missing or corrupt is reported as unreadable rather than
+ * dropped, and never blocks finalisation: a run that could not reach a terminal
+ * state because one evidence file is damaged would be a worse failure than a
+ * report that says which file it could not read.
+ */
+async function readAttemptDetails(directory, attempts) {
+  const details = {};
+  for (const entry of attempts) {
+    if (!Number.isInteger(entry?.number)) continue;
+    const file = path.join(directory, `${attemptStem(entry.number)}.json`);
+    try {
+      details[entry.number] = JSON.parse(await readFile(file, 'utf8'));
+    } catch (error) {
+      details[entry.number] = {
+        unreadable: error?.code === 'ENOENT' || error?.code === 'ENOTDIR'
+          ? `${attemptStem(entry.number)}.json is missing`
+          : `${attemptStem(entry.number)}.json could not be read: ${error.message}`,
+      };
+    }
+  }
+  return details;
+}
+
 /** Append a named reason to the run record. Codes are stable; prose is not. */
 function withReason(reasons, code, message, at) {
   if (code === null || code === undefined) return reasons;
@@ -623,7 +653,11 @@ export async function finaliseRun(directory, { state, reason = null, acceptedAtt
     });
   });
 
-  const report = buildReport(run, { schema: REPORT_SCHEMA, generatedAt: at });
+  const report = buildReport(run, {
+    schema: REPORT_SCHEMA,
+    generatedAt: at,
+    attemptDetails: await readAttemptDetails(resolved, run.attempts ?? []),
+  });
   const reportJson = path.join(resolved, REPORT_JSON_FILE);
   const reportMarkdown = path.join(resolved, REPORT_MARKDOWN_FILE);
 

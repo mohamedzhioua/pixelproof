@@ -222,10 +222,23 @@ test('a bound spent on mechanical failures rejects and promotes nothing', async 
     assert.equal(run.attempts.length, 2, 'the bound is a bound: no third attempt was spent');
 
     // ADR 0020 §7: nothing is promoted on exhaustion, and both candidates are
-    // named in the report so an operator can choose one by hand.
+    // named in the report **with the table an operator would choose on**. The
+    // attempt numbers alone would pass with that capability entirely absent.
     await assert.rejects(() => readFile(ws.out), { code: 'ENOENT' });
     const report = await readJson(path.join(directory, 'report.json'));
     assert.deepEqual(report.attempts.map((attempt) => attempt.number), [1, 2]);
+
+    const measured = report.attempts.map((attempt) => attempt.checks
+      .filter((check) => check.status === 'FAIL')
+      .map((check) => `${check.name}: expected ${check.expected}, got ${check.actual}`));
+    assert.deepEqual(measured, [
+      ['height: expected 32, got 48'],
+      ['width: expected 32, got 48'],
+    ], 'the two candidates are distinguishable in the report, or "choose by hand" means nothing');
+
+    const narrative = await readFile(path.join(directory, 'report.md'), 'utf8');
+    assert.match(narrative, /## Every attempt, in detail/);
+    assert.match(narrative, /### Attempt 1[\s\S]*### Attempt 2/);
   } finally {
     await removeTemporaryDirectory(ws.root);
   }
@@ -402,7 +415,19 @@ test('--retakes is refused everywhere it could only mislead, before anything is 
       '--spec', ws.specPath, '--judge', 'host', '--retakes', '2', '--run-dir', ws.runRoot,
     ], { env: ws.env });
     assert.equal(svg.status, 1);
-    assert.match(svg.stderr, /--retakes needs a prompt-driven provider/);
+    assert.match(svg.stderr, /a retake bound above 1 \(2, from --retakes\) needs a prompt-driven provider/);
+
+    // The bound can come from the spec, and then the message must say so rather
+    // than blaming a flag the user never typed.
+    const specBound = path.join(ws.root, 'spec-bound.json');
+    await writeFile(specBound, JSON.stringify({ ...SPEC, retakes: 3 }, null, 2));
+    const fromSpec = pixelproof([
+      'generate', '--provider', 'svg', '--svg-file', ws.specPath, '--out', ws.out,
+      '--spec', specBound, '--judge', 'host', '--run-dir', ws.runRoot,
+    ], { env: ws.env });
+    assert.equal(fromSpec.status, 1);
+    assert.match(fromSpec.stderr, /a retake bound above 1 \(3, from spec\.retakes\)/);
+    assert.doesNotMatch(fromSpec.stderr, /--retakes needs/, 'no flag was given, so none may be blamed');
 
     // A bound of zero is a mistake, not a configuration.
     const zero = pixelproof([
@@ -416,6 +441,24 @@ test('--retakes is refused everywhere it could only mislead, before anything is 
     const verified = pixelproof(['verify', '--file', ws.specPath, '--retakes', '2'], { env: ws.env });
     assert.equal(verified.status, 1);
     assert.match(verified.stderr, /Error: Unknown argument: --retakes/);
+
+    // And `verify` must not validate the field either. A spec carrying a
+    // `retakes` value this build would refuse from `generate` still verifies,
+    // because rejecting a field the command cannot act on would make a spec that
+    // worked under v0.3.0 start failing.
+    const oddSpec = path.join(ws.root, 'odd-retakes.json');
+    await writeFile(oddSpec, JSON.stringify({ ...SPEC, retakes: 0 }, null, 2));
+    const image = path.join(ws.root, 'plain.png');
+    await writePng(image, 32, 32);
+
+    const bare = pixelproof(['verify', '--file', image, '--spec', oddSpec], { env: ws.env });
+    assert.equal(bare.status, 0, bare.stderr);
+
+    const judged = pixelproof([
+      'verify', '--file', image, '--spec', oddSpec, '--judge', 'host', '--run-dir', ws.runRoot,
+    ], { env: ws.env });
+    assert.equal(judged.status, 2, judged.stderr);
+    assert.doesNotMatch(judged.stderr, /retakes/, 'verify must not have an opinion about spec.retakes');
   } finally {
     await removeTemporaryDirectory(ws.root);
   }

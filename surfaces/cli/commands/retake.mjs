@@ -198,7 +198,6 @@ export async function runRetake(argv = [], { output = defaultOutput } = {}) {
         : run.resolved?.deadlineMs ?? undefined,
       out: plan.out,
       attempt,
-      bound: boundOf(run),
       output,
       regenerate: async ({ attempt: next, corrections: nextCorrections }) => {
         const nextTarget = attemptTarget(directory, plan.out ?? '.png', next);

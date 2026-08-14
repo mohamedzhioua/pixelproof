@@ -66,17 +66,27 @@ export function openRoundOf(run) {
  *
  * Round numbers run across the whole run — attempt 2 starts at round 3 — but ADR
  * 0009 §5's bound of two rounds is *per attempt*, so escalation has to count
- * within the attempt rather than within the run. A round summary written before
- * ADR 0020 records no `attempt`; for those the two numberings coincide, which is
- * why the fallback is the round number itself rather than a guess.
+ * within the attempt rather than within the run.
+ *
+ * A round summary written before ADR 0020 records no `attempt`, and such a run
+ * could only ever have had one, so a missing `attempt` reads as 1 rather than as
+ * a distinct group. Treating it as its own group would be wrong on the one shape
+ * that mixes the two: a run whose round 1 predates this build and whose
+ * escalation was issued by it would report round 2 as position 1 of its attempt
+ * and hand it a third round.
  */
+function attemptOfRound(entry) {
+  return Number.isInteger(entry?.attempt) ? entry.attempt : 1;
+}
+
 export function roundInAttempt(run, round) {
   const rounds = Array.isArray(run?.rounds) ? run.rounds : [];
   const entry = rounds.find((candidate) => candidate?.round === round) ?? null;
-  if (entry === null || !Number.isInteger(entry.attempt)) return round;
+  if (entry === null) return round;
 
+  const attempt = attemptOfRound(entry);
   const siblings = rounds
-    .filter((candidate) => candidate?.attempt === entry.attempt)
+    .filter((candidate) => attemptOfRound(candidate) === attempt)
     .map((candidate) => candidate.round)
     .sort((left, right) => left - right);
   const position = siblings.indexOf(round);
@@ -129,24 +139,35 @@ export async function listPendingRuns(options = {}) {
 }
 
 /**
- * Every run that is open but has nothing outstanding: `running`, with at least
- * one attempt recorded (ADR 0020's orphan).
+ * Every run that is open but has nothing outstanding: ADR 0020's orphan.
  *
- * This is the state a retake leaves behind when an operator never continues and
- * never abandons. It is invisible to `judge pending` — correctly, because
- * nothing is pending — which is exactly why it has to be visible somewhere else.
- * ADR 0009 §4's guarantee is that an abandoned handoff is visible to someone who
- * never knew one happened, and it would quietly stop being true for the retake
- * path if nobody counted these.
+ * This is the state a rejected attempt leaves behind when an operator never
+ * retakes and never abandons. It is invisible to `judge pending` — correctly,
+ * because nothing is pending — which is exactly why it has to be visible
+ * somewhere else. ADR 0009 §4's guarantee is that an abandoned handoff is
+ * visible to someone who never knew one happened, and it would quietly stop
+ * being true for the retake path if nobody counted these.
  *
- * "With at least one attempt" is the whole definition. A `running` run with no
- * attempt is either a generation in flight right now or one that died before it
- * produced anything; neither is a judgement anyone is waiting on.
+ * **The definition is the recorded `retake-available` reason, not "`running`
+ * with an attempt."** That looser reading was wrong, and wrong in the direction
+ * that matters: `completeJudgedRun` records each attempt *before* it regenerates
+ * the next one, so a perfectly healthy `generate --judge host --retakes 3` sits
+ * in `running` with attempts recorded for the whole duration of every provider
+ * call after the first. Counting that would make `doctor` report an orphan
+ * during ordinary operation, and — worse — would let `judge abandon` with no
+ * `--run` finalise a run that a generator was still writing into.
+ *
+ * `retake-available` is written by exactly one place, the submit-side transition
+ * in `handoff.mjs`, and only after a rejected attempt with the bound unspent. A
+ * live `pixelproof retake` on such a run does still match, and that is honest:
+ * the run genuinely is between attempts until the next one is recorded.
  */
 export async function listStalledRuns(options = {}) {
   const runs = await listRuns(options);
   return runs.filter((entry) => (
-    entry.state === RUNNING && Array.isArray(entry.run?.attempts) && entry.run.attempts.length > 0
+    entry.state === RUNNING
+    && Array.isArray(entry.run?.attempts) && entry.run.attempts.length > 0
+    && (entry.run?.reasons ?? []).some((reason) => reason?.code === OUTCOME_REASONS.retakeAvailable)
   ));
 }
 

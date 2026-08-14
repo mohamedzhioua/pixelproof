@@ -141,12 +141,40 @@ function everyStatePair() {
   return pairs;
 }
 
-/** Whether the real machine agrees with a hypothetical table on all 25 pairs. */
-function machineMatches(table) {
-  return everyStatePair().every((key) => {
-    const [from, to] = key.split('->');
-    return canTransition(from, to) === table.has(key);
-  });
+/**
+ * The same table, *derived* from four named rules instead of transcribed.
+ *
+ * This is the guard on the guard, and it replaces an earlier attempt that did
+ * not work. That version mutated copies of `LEGAL_TRANSITIONS` and asserted the
+ * machine disagreed with each one — which is a tautology once the machine is
+ * known to match the unmutated set, and which passes unchanged against a machine
+ * that legalises `accepted -> running` if the constant is edited to match. It
+ * defended against exactly the edit it could not see.
+ *
+ * A derivation does work, because it does not mirror the table. Widening the
+ * machine and editing the constant to match still fails here, since the rules
+ * say otherwise; to get past all three you have to edit a numbered rule that
+ * cites its ADR, which is a deliberate act and not an accident.
+ */
+function tableFromRules() {
+  const legal = new Set();
+  for (const from of RUN_STATES) {
+    // Rule 1 (ADR 0014 §2): a terminal state has no outgoing edge at all. This
+    // is what makes ADR 0009's nonce single-use.
+    if ([ACCEPTED, REJECTED, ABANDONED].includes(from)) continue;
+
+    for (const to of RUN_STATES) {
+      // Rule 2: any open run may finish in any terminal way.
+      if ([ACCEPTED, REJECTED, ABANDONED].includes(to)) { legal.add(`${from}->${to}`); continue; }
+      // Rule 3 (ADR 0009 §5): any open run may become pending — `running` when a
+      // checklist is issued, `pending-judgement` again on escalation.
+      if (to === PENDING_JUDGEMENT) { legal.add(`${from}->${to}`); continue; }
+      // Rule 4 (ADR 0020 §1): only `pending-judgement` re-enters `running`, and
+      // only for a new attempt number. `running -> running` is not a transition.
+      if (to === RUNNING && from === PENDING_JUDGEMENT) legal.add(`${from}->${to}`);
+    }
+  }
+  return legal;
 }
 
 test('every illegal state transition is refused, and terminal states are final', () => {
@@ -191,31 +219,24 @@ test('every illegal state transition is refused, and terminal states are final',
   assert.throws(() => assertTransition('idle', 'accepted'), (error) => error instanceof RunError);
 });
 
-test('the transition table above still fires: no single extra edge survives it', () => {
-  // A guard on the guard. Editing LEGAL_TRANSITIONS to match a widened
-  // implementation is the obvious way to "fix" the test above, and it would
-  // silently retire the protection — so prove the table discriminates at every
-  // pair it refuses, by checking the machine against mutated in-memory copies
-  // rather than against itself.
-  assert.equal(machineMatches(LEGAL_TRANSITIONS), true, 'the table must describe the shipped machine');
+test('the table is not merely a transcript: four named rules derive it independently', () => {
+  // Editing LEGAL_TRANSITIONS to match a widened implementation is the obvious
+  // way to "fix" the test above. This is what makes that shortcut fail: the
+  // rules are stated in terms of terminality and of ADR 0020 §1's single edge,
+  // not as a copy of the pairs, so the constant and the machine cannot be
+  // quietly moved together.
+  const derived = tableFromRules();
 
-  const refused = everyStatePair().filter((key) => !LEGAL_TRANSITIONS.has(key));
-  assert.equal(refused.length, 16);
+  assert.deepEqual(
+    [...derived].sort(),
+    [...LEGAL_TRANSITIONS].sort(),
+    'the golden table and the rules that justify it have drifted apart',
+  );
 
-  for (const widened of refused) {
-    assert.equal(
-      machineMatches(new Set([...LEGAL_TRANSITIONS, widened])),
-      false,
-      `legalising ${widened} in core/run/state.mjs must break the table test, and does not`,
-    );
-  }
-
-  // And in the other direction: removing any legal edge must break it too, so a
-  // narrowed machine cannot slip past either.
-  for (const narrowed of LEGAL_TRANSITIONS) {
-    const table = new Set(LEGAL_TRANSITIONS);
-    table.delete(narrowed);
-    assert.equal(machineMatches(table), false, `removing ${narrowed} must break the table test`);
+  for (const key of everyStatePair()) {
+    const [from, to] = key.split('->');
+    assert.equal(canTransition(from, to), derived.has(key),
+      `the shipped machine disagrees with the derived rules on ${key}`);
   }
 });
 
@@ -455,8 +476,29 @@ test('the report matches the run it was written from', async () => {
     assert.equal(report.state, run.state);
     assert.equal(report.accepted, run.accepted);
     assert.deepEqual(report.outcome, run.outcome);
-    assert.deepEqual(report.attempts, run.attempts);
     assert.deepEqual(report.reasons, run.reasons);
+
+    // The report's attempts are the run record's, plus the evidence the run
+    // record does not carry (ADR 0020 §7). The summary half must still match
+    // exactly: a report that could say something `run.json` does not would be a
+    // second truth.
+    assert.deepEqual(
+      report.attempts.map(({ checks, semantic, ...summary }) => summary),
+      run.attempts,
+    );
+    // And the added half is really there, on every attempt, with the measured
+    // values an operator would choose between — not just the three counts.
+    assert.equal(report.attempts.length, 2);
+    for (const attempt of report.attempts) {
+      assert.ok(Array.isArray(attempt.checks), `attempt ${attempt.number} carries no mechanical table`);
+      assert.deepEqual(
+        attempt.checks.map((check) => [check.name, check.expected, check.actual, check.status]),
+        attempt.number === 1
+          ? [['width', 1024, 1024, 'FAIL']]
+          : [['width', 1024, 1024, 'PASS'], ['skipped-0', 'x', 'no decoder', 'SKIP']],
+      );
+      assert.equal(attempt.semantic, null, 'nothing judged this run, and the report says so rather than omitting it');
+    }
     assert.equal(report.pixelproofVersion, run.pixelproofVersion);
     assert.deepEqual(await readReport(created.directory), report);
 

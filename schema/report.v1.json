@@ -32,7 +32,7 @@
     },
     "attempts": {
       "type": "array",
-      "description": "Ordered by `number` ascending. Identical to the run record's attempts.",
+      "description": "Ordered by `number` ascending. Each entry is the run record's attempt summary plus the evidence that summary does not carry: `checks`, the mechanical table, and `semantic`, the recorded verdicts (ADR 0020 §7). The summary half is byte-identical to `run.json`'s; the two added keys are read out of `attempt-<n>.json` at finalisation, so nothing here can claim something the run record does not. Without them, a report that tells an operator to choose an attempt by hand on exhaustion would offer three integers to choose on.",
       "items": { "$ref": "#/$defs/attemptSummary" }
     },
     "reasons": { "type": "array", "items": { "$ref": "#/$defs/reason" } },
@@ -114,6 +114,34 @@
           ]
         },
         "verification": { "$ref": "#/$defs/verificationSummary" },
+        "checks": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "status"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "expected": {},
+                  "actual": {},
+                  "passed": { "type": ["boolean", "null"] },
+                  "status": { "enum": ["PASS", "FAIL", "SKIP"] }
+                },
+                "additionalProperties": true
+              }
+            }
+          ],
+          "description": "The mechanical table for this attempt, as measured (ADR 0020 §7). Null when the attempt's evidence file recorded none or could not be read — never absent, so a consumer need not tell 'no table' from 'an older build'."
+        },
+        "semantic": {
+          "description": "The recorded per-check verdicts for this attempt, verbatim from `attempt-<n>.json`. Null when nothing judged it. An unjudged assertion is unverified, never satisfied."
+        },
+        "evidenceUnreadable": {
+          "type": "string",
+          "description": "Present only when this attempt's `attempt-<n>.json` was missing or unparseable. The attempt is still listed, with the reason: a silently missing table would let the report imply the attempt had nothing wrong with it."
+        },
         "files": { "type": "object", "additionalProperties": true }
       },
       "additionalProperties": true

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -63,7 +63,18 @@ const ASSERTIONS = [
   'The background is a seamless white sweep with no visible horizon line.',
 ];
 
-function verification({ ok = true, failed = 0, checks = [] } = {}) {
+/**
+ * A verification record in the shape `core/verification/result.mjs` produces.
+ *
+ * It carries a real check row by default, because ADR 0020 §7's report is about
+ * the *rows*: a fixture whose table is empty could not tell a report that omits
+ * the table from one that carries it.
+ */
+function verification({
+  ok = true,
+  failed = 0,
+  checks = [{ name: 'width', expected: 1024, actual: ok ? 1024 : 768, passed: ok, status: ok ? 'PASS' : 'FAIL' }],
+} = {}) {
   return {
     file: 'attempt.png',
     decoder: 'none',
@@ -347,9 +358,30 @@ test('the last attempt of a spent bound finalises rejected and promotes nothing'
     // function to appeal to, and "best" would silently mean "last".
     await assert.rejects(() => readFile(out), { code: 'ENOENT' });
 
-    // Both attempts are in the report, so an operator can choose one by hand.
+    // ADR 0020 §7: the report lists every attempt **with its mechanical table
+    // and its verdicts**, so an operator has something to choose on. Asserting
+    // only the attempt numbers would pass with that capability entirely absent,
+    // which is how this went unimplemented the first time.
     const report = JSON.parse(await readFile(path.join(fixture.directory, 'report.json'), 'utf8'));
     assert.deepEqual(report.attempts.map((entry) => entry.number), [1, 2]);
+
+    for (const entry of report.attempts) {
+      assert.ok(Array.isArray(entry.checks), `attempt ${entry.number} carries no mechanical table`);
+      assert.deepEqual(
+        entry.checks.map((check) => [check.name, check.expected, check.actual, check.status]),
+        [['width', 1024, 1024, 'PASS']],
+      );
+      assert.equal(entry.semantic?.judge, 'host', `attempt ${entry.number} carries no verdicts`);
+      assert.deepEqual(entry.semantic.checks.map((check) => check.verdict), ['fail', 'fail']);
+      assert.equal(entry.semantic.checks[0].evidence, 'what the host reported seeing');
+    }
+
+    // And the narrative a person actually reads names them too, per attempt.
+    const narrative = await readFile(path.join(fixture.directory, 'report.md'), 'utf8');
+    assert.match(narrative, /## Every attempt, in detail/);
+    assert.match(narrative, /### Attempt 1[\s\S]*### Attempt 2/);
+    assert.match(narrative, /the judge reported: what the host reported seeing/);
+    assert.match(narrative, /no attempt is ranked/);
   } finally {
     await removeTemporaryDirectory(root);
   }
@@ -577,6 +609,127 @@ test('the bound is counted from recorded attempts, not from a separate tally', a
   } finally {
     await removeTemporaryDirectory(root);
   }
+});
+
+test('an attempt whose evidence file is unreadable is reported as such, never omitted', async () => {
+  // A report that silently dropped an attempt would let it read as though that
+  // attempt had nothing wrong with it, and finalisation must not be blocked by
+  // one damaged file either.
+  const root = await temporaryDirectory('pixelproof-retake-unreadable-');
+  try {
+    const fixture = await judgedRun(root, { retakes: 1 });
+    await recordAttempt(fixture.directory, {
+      artifact: null,
+      verification: verification({ ok: false, failed: 1 }),
+      number: 1,
+    });
+    await writeFile(path.join(fixture.directory, 'attempt-1.json'), '{ this is not json', 'utf8');
+
+    const { report } = await finaliseRun(fixture.directory, { state: REJECTED, reason: 'mechanical-failed' });
+
+    assert.equal(report.attempts.length, 1, 'the attempt is still listed');
+    assert.equal(report.attempts[0].checks, null);
+    assert.match(report.attempts[0].evidenceUnreadable, /attempt-1\.json could not be read/);
+
+    const narrative = await readFile(path.join(fixture.directory, 'report.md'), 'utf8');
+    assert.match(narrative, /Its evidence file could not be read/);
+  } finally {
+    await removeTemporaryDirectory(root);
+  }
+});
+
+// --- what counts as an orphan ----------------------------------------------
+
+test('a generation in flight is not an orphan, and abandon will not pick it up', async () => {
+  // `completeJudgedRun` records each attempt *before* it regenerates the next
+  // one, so a healthy `generate --judge host --retakes 3` sits in `running` with
+  // attempts recorded for the whole of every provider call after the first.
+  // Counting that as an orphan would make doctor wrong during ordinary use and
+  // would let `judge abandon` with no --run finalise a run being written into.
+  const root = await temporaryDirectory('pixelproof-retake-inflight-');
+  try {
+    const live = await judgedRun(root, { retakes: 3 });
+    await recordAttempt(live.directory, {
+      artifact: null,
+      verification: verification({ ok: false, failed: 1 }),
+      number: 1,
+    });
+
+    const midGeneration = await readRun(live.directory);
+    assert.equal(midGeneration.state, RUNNING);
+    assert.equal(midGeneration.attempts.length, 1, 'the shape an orphan and a live run share');
+
+    assert.deepEqual(await listStalledRuns({ root: live.runRoot }), [],
+      'a run with attempts but no recorded retake offer is a generation in flight, not an orphan');
+    await assert.rejects(
+      () => selectClosableRun({ root: live.runRoot }),
+      (error) => error instanceof PendingError && error.code === 'PENDING_NOT_FOUND',
+      'judge abandon with no --run must not reach a run nobody handed back',
+    );
+
+    // The discriminating half: the same shape *plus* the reason the submit-side
+    // transition records is an orphan, and is reachable.
+    const orphan = await judgedRun(root, { retakes: 3 });
+    const { record } = await attemptAndRound(orphan, 1);
+    await submit(orphan, submissionFor(record, 'fail'));
+
+    const stalled = await listStalledRuns({ root: orphan.runRoot });
+    assert.deepEqual(stalled.map((entry) => entry.runId), [orphan.runId]);
+    assert.equal(stalled[0].run.state, RUNNING);
+  } finally {
+    await removeTemporaryDirectory(root);
+  }
+});
+
+test('a checklist orphaned by a crash is refused, not silently overwritten', async () => {
+  // `issueFirstRound` writes `judge-request-<round>.json` before it records the
+  // round, so a process killed between the two leaves a request file the run
+  // record knows nothing about. A retake would compute the same round number and
+  // rename over a reserved evidence file (ADR 0014 §5).
+  const root = await temporaryDirectory('pixelproof-retake-crashfile-');
+  try {
+    const fixture = await judgedRun(root, { retakes: 3 });
+    const { record } = await attemptAndRound(fixture, 1);
+    await submit(fixture, submissionFor(record, 'fail'));
+
+    // Simulate the crash: the next round's request file exists, `rounds` does not
+    // mention it.
+    const orphanedFile = path.join(fixture.directory, 'judge-request-2.json');
+    await writeFile(orphanedFile, '{"schema":"pixelproof.judge-pending/1"}', 'utf8');
+    const before = await readFile(orphanedFile, 'utf8');
+
+    await assert.rejects(
+      () => openRetakeableRun({ runId: fixture.runId, root: fixture.runRoot }),
+      (error) => error instanceof PendingError
+        && error.code === 'RETAKE_NOT_OPEN'
+        && /judge-request-2\.json on disk/.test(error.message),
+    );
+
+    assert.equal(await readFile(orphanedFile, 'utf8'), before, 'the orphaned checklist is untouched');
+
+    // And with the file moved out of the way, the same run retakes normally —
+    // so the refusal is the guard biting, not the run being unretakeable.
+    await rm(orphanedFile);
+    const opened = await openRetakeableRun({ runId: fixture.runId, root: fixture.runRoot });
+    assert.equal(opened.attempt, 2);
+  } finally {
+    await removeTemporaryDirectory(root);
+  }
+});
+
+test('a round written before ADR 0020 does not earn its attempt a third round', () => {
+  // The one shape that mixes numbering schemes: v0.3.0 issued round 1 with no
+  // `attempt`, this build issued the escalation with `attempt: 1`. Reading the
+  // missing field as its own group would make round 2 look like position 1 and
+  // hand the attempt a round 3.
+  const mixed = { rounds: [{ round: 1 }, { round: 2, attempt: 1 }] };
+  assert.equal(roundInAttempt(mixed, 1), 1);
+  assert.equal(roundInAttempt(mixed, 2), MAX_ROUNDS, 'the escalation is position 2, so nothing follows it');
+
+  // A wholly pre-0020 run still reads as it always did.
+  assert.equal(roundInAttempt({ rounds: [{ round: 1 }, { round: 2 }] }, 2), 2);
+  // And an unknown round falls back to its own number rather than inventing one.
+  assert.equal(roundInAttempt({ rounds: [] }, 3), 3);
 });
 
 // --- abandoning a run between attempts -------------------------------------

@@ -388,9 +388,6 @@ async function judgeAbandon(argv, output) {
   await closePendingRun(opened.directory, { message: options.reason });
 
   output.log(`Run ${opened.runId} closed as rejected: ${options.reason}`);
-  if (opened.round !== null) {
-    output.log(`Round ${opened.round.round} was never answered, and an unanswered checklist is never a pass.`);
-  }
   output.log(`Nothing was accepted. The candidate and its report are in ${opened.directory}.`);
   return 1;
 }

@@ -39,6 +39,7 @@ import { correctionsFor } from '../../core/generation/correction.mjs';
 import {
   HOST_JUDGE,
   OUTCOME_REASONS,
+  boundOf,
   describeRemaining,
   issueFirstRound,
   lastRoundOf,
@@ -65,7 +66,15 @@ export const SUPPORTED_JUDGES = Object.freeze([HOST_JUDGE]);
  * judged at all. Returns `null` when no judge was asked for, which is the path
  * that must stay byte-identical to v1.
  */
-export function resolveJudgeOptions(options, { artifact, requireSpec = true, spec = null } = {}) {
+/**
+ * @param {{retakes?: boolean}} context `retakes: false` for a command that can
+ *   never spend a second attempt. `verify` inspects an image somebody else made:
+ *   there is no provider call to repeat and no prompt to correct, so it must not
+ *   even *validate* `spec.retakes`. Reading a field it cannot act on would let a
+ *   spec that verified under v0.3.0 start failing, which is a regression ADR
+ *   0003 does not permit and ADR 0020 §6 never asked for.
+ */
+export function resolveJudgeOptions(options, { artifact, requireSpec = true, spec = null, retakes = true } = {}) {
   const requested = options.judge ?? null;
   if (requested === null) {
     if (options.judgeDeadline) {
@@ -74,7 +83,7 @@ export function resolveJudgeOptions(options, { artifact, requireSpec = true, spe
     // Refused for the same reason and in the same place: without a judge there
     // is nothing to correct, and honouring a bound here would change what a
     // bare `generate` spends (ADR 0020 §6).
-    resolveRetakeBound({ option: options.retakes ?? null, spec, judged: false });
+    if (retakes) resolveRetakeBound({ option: options.retakes ?? null, spec, judged: false });
     return null;
   }
 
@@ -104,7 +113,7 @@ export function resolveJudgeOptions(options, { artifact, requireSpec = true, spe
   return {
     judge: requested,
     deadlineMs: options.judgeDeadline ? parseDeadline(options.judgeDeadline) : undefined,
-    retakes: resolveRetakeBound({ option: options.retakes ?? null, spec, judged: true }),
+    retakes: retakes ? resolveRetakeBound({ option: options.retakes ?? null, spec, judged: true }) : 1,
     assertions,
   };
 }
@@ -198,11 +207,15 @@ export async function completeJudgedRun(directory, {
   deadlineMs,
   out = null,
   attempt = 1,
-  bound = 1,
   regenerate = null,
   now = new Date(),
   output = defaultOutput,
 }) {
+  // Read from the run record rather than taken as a parameter, so this and
+  // `applySubmission` — which reads `boundOf` too — cannot disagree about the
+  // same run's bound. They agreed before only because two call sites happened to
+  // pass the number that was written.
+  const bound = boundOf(run);
   let currentAttempt = attempt;
   let currentArtifact = artifactPath;
   let currentVerification = verification;

@@ -98,14 +98,29 @@ check would reject every otherwise-correct image forever.
    "best" would silently mean "last". `skills/image/SKILL.md` step 8's best-attempt promotion
    was removed rather than kept as a labelled exception.
 
+An adversarial review of the diff (2026-08-14) found five defects that the green suite did not,
+all fixed before merge. Two are worth carrying forward as lessons rather than as history:
+
+- **A test named §7 and asserted something weaker.** ADR 0020 §7 promises the report lists every
+  attempt "with its mechanical table and its verdicts"; the report carried only three counts, and
+  two tests asserted the attempt *numbers* while their comments claimed the capability. Both the
+  README and the image skill had already repeated the unbacked claim. The report now carries the
+  rows and the verdicts, and the tests assert values an operator could choose between.
+- **A guard that could not fail.** The first attempt at proving the transition table still bites
+  mutated copies of the golden constant and asserted the machine disagreed — a tautology once the
+  machine is known to match the unmutated set, and it passed unchanged against a machine that
+  legalised `accepted -> running` with the constant edited to match. It defended against exactly
+  the edit it could not see. It is replaced by a **derivation from four named rules**: the rules,
+  the constant and the machine must all agree, so moving the machine and the constant together
+  still fails. That replacement was verified by making both edits and watching it go red.
+
 Three guards worth not undoing, each proven to fire by mutating the source and watching the
 suite go red:
 
-- `test/run-directory.test.mjs` holds the 25-pair transition table as a golden constant, then
-  proves the table still discriminates by checking the machine against **mutated in-memory
-  copies** — legalising any one of the 16 refused pairs must break it, and so must removing any
-  of the 9 legal ones. A third test pins the invariant by name: `pending-judgement` is the only
-  state that re-enters `running`, and `accepted -> running` is what keeps the nonce single-use.
+- `test/run-directory.test.mjs` holds the 25-pair transition table as a golden constant, derives
+  the same table from four named rules, and requires all three to agree. A third test pins the
+  invariant by name: `pending-judgement` is the only state that re-enters `running`, and
+  `accepted -> running` is what keeps the nonce single-use.
 - `test/retake.test.mjs` proves a stale nonce is still refused after a run re-opens, and pairs
   each refusal with the same payload that succeeds, so the refusals are the mechanism biting
   rather than a malformed submission.

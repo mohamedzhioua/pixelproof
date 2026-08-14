@@ -30,7 +30,22 @@ recorded here because they are decisions, not mechanics:
   the first byte for byte — spending the bound to change nothing.
 - **A judge that *errored* (`ok: false`) does not open a retake.** That reply says the judging
   failed, not the artifact; spending a generation to answer a broken judge would correct the
-  wrong thing. It finalises as ADR 0009 §5 already specified.
+  wrong thing. It finalises as ADR 0009 §5 already specified. The cost is real and is accepted
+  with it: a flaky host reply burns the whole bound, and the operator opens a new run.
+
+Two more were settled during an adversarial review of the diff on the same date:
+
+- **An orphan is defined by the recorded `retake-available` reason, not by "`running` with an
+  attempt recorded."** The looser reading counts a *healthy* run: `completeJudgedRun` records each
+  attempt before regenerating the next, so `generate --judge host --retakes 3` sits in exactly that
+  shape for the whole of every provider call after the first. `doctor` would have reported an
+  orphan during ordinary use, and `judge abandon` with no `--run` could have finalised a run a
+  generator was still writing into.
+- **`judge abandon` with no `--run` now considers open-between-attempts runs alongside pending
+  ones**, so with one of each it refuses and names both rather than closing the pending one. That
+  is a change to a pre-existing path, and it is the right way round: a command that cannot prove
+  which run is meant does not get to guess (ADR 0009 §3's rule, applied to the wider candidate set
+  this decision creates).
 
 ## Context
 
@@ -105,9 +120,15 @@ Two things this deliberately does **not** do:
 | Failure | Known in | What happens |
 | --- | --- | --- |
 | Mechanical, retakes left | `generate` / `retake` | Recorded, corrected, and regenerated in the same process. No host is involved, so nothing has to wait. |
-| Mechanical, bound spent | `generate` / `retake` | Finalised `rejected`, reason `retakes-exhausted`. Exit 1. |
+| Mechanical, bound spent | `generate` / `retake` | Finalised `rejected`, reason `retakes-exhausted`†. Exit 1. |
 | Semantic, retakes left | `judge submit` | Verdicts recorded on attempt *n*. Run moves to `running`. The correction and the exact retake command are printed. **Exit 1.** |
-| Semantic, bound spent | `judge submit` | Finalised `rejected`, reason `retakes-exhausted`. Exit 1. |
+| Semantic, bound spent | `judge submit` | Finalised `rejected`, reason `retakes-exhausted`†. Exit 1. |
+
+† *Qualified on 2026-08-14, at implementation (see the confirmation block above): `retakes-exhausted`
+is recorded only when the bound is above 1. A run left on the default bound of one never asked for
+a second attempt, so it keeps the `mechanical-failed` / `semantic-failed` / `semantic-unsure` reason
+it has always had. Reading this row unconditionally would rename the outcome of every judged run
+that already exists to describe a feature it did not use.*
 
 `judge submit` never generates. It records, decides, and prints; the next generation is a
 separate invocation the operator chooses to spend. That keeps ADR 0009's contract intact —
@@ -141,6 +162,15 @@ for the genuinely new conditions:
 | --- | --- |
 | `RETAKE_EXHAUSTED` | `attempts.length >= retakes`; the bound is spent |
 | `RETAKE_NOT_OPEN` | the run is terminal, has an unanswered round, or asked for no judge |
+
+*Two further conditions were found at implementation on 2026-08-14 and are refused under
+`RETAKE_NOT_OPEN` rather than by adding codes: a run that has **recorded no attempt yet** (there is
+nothing to correct), and a run whose **next round's request file is already on disk** though its
+record knows of no such round. The second is the crash window in `issueFirstRound`, which writes
+`judge-request-<round>.json` before recording the round: retaking there would compute the same
+round number and rename over a reserved evidence file (ADR 0014 §5). The refusal is deliberate and
+is not a repair — this build cannot know whether that orphaned checklist was shown to anyone, and
+deleting evidence to make a command succeed is the wrong trade.*
 
 That is a deliberate, ADR-recorded extension of a closed set, which is the only way a closed set
 should ever grow.

@@ -17,12 +17,16 @@
  * Nothing here generates, and nothing here decides whether an image is any good.
  */
 
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
+
 import { PENDING_JUDGEMENT, RUNNING } from '../run/state.mjs';
 import { readRun } from '../run/store.mjs';
 import { assertRunId } from '../run/id.mjs';
 import { resolveRunDirectory } from '../run/root.mjs';
 import { PendingError, asPendingError } from './errors.mjs';
-import { openRoundOf } from './submit.mjs';
+import { pendingRequestFile } from './pending.mjs';
+import { lastRoundOf, openRoundOf } from './submit.mjs';
 
 /**
  * The bound when nobody asked for one: a single attempt, which is exactly what
@@ -34,6 +38,16 @@ export const DEFAULT_RETAKES = 1;
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function fileExists(file) {
+  try {
+    await stat(file);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+    throw error;
+  }
 }
 
 /**
@@ -136,9 +150,14 @@ export function assertRetakeable(run, { runId = null, directory = null } = {}) {
     );
   }
 
-  // A run in `running` should have no open round, but a crash between writing a
-  // checklist and recording the state can leave one. Generating over it would
+  // A run in `running` should have no open round, but a crash between recording
+  // a checklist and moving the state can leave one. Generating over it would
   // orphan a checklist somebody may still be answering.
+  //
+  // This covers only the second of `issueFirstRound`'s two windows — `rounds` is
+  // written before the transition but after the request file — so
+  // `openRetakeableRun` additionally refuses when the next round's file is
+  // already on disk. See there.
   const open = openRoundOf(run);
   if (open !== null) {
     throw new PendingError(
@@ -201,6 +220,28 @@ export async function openRetakeableRun({ runId, root, runDir, env, cwd } = {}) 
   }
 
   assertRetakeable(run, { runId, directory });
+
+  // `issueFirstRound` writes `judge-request-<round>.json` *before* it records the
+  // round in `run.json`, so a process killed between those two leaves a request
+  // file the run record does not know about. `lastRoundOf` cannot see it, the
+  // retake would compute the same round number, and `writeAtomic` would rename
+  // over a reserved evidence file (ADR 0014 §5) — destroying one attempt's
+  // checklist and replacing it with another's under the same name.
+  //
+  // The fix is a refusal, not a repair: this build does not know whether that
+  // orphaned checklist was ever shown to anyone, and deleting evidence to make a
+  // command succeed is the wrong trade in a repository whose position is that
+  // the evidence is the point.
+  const nextRound = lastRoundOf(run) + 1;
+  const nextRequest = path.join(directory, pendingRequestFile(nextRound));
+  if (await fileExists(nextRequest)) {
+    throw new PendingError(
+      'RETAKE_NOT_OPEN',
+      `Run ${runId} already has ${pendingRequestFile(nextRound)} on disk though its record knows of no such round; `
+        + 'a previous attempt was interrupted mid-issue. Move or delete that file deliberately before retaking.',
+      { details: { runId, directory, round: nextRound, file: nextRequest } },
+    );
+  }
 
   return { runId, directory, run, attempt: nextAttemptNumber(run) };
 }

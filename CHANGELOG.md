@@ -28,6 +28,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   check contributes its name, expected value and measured value; a failed or unsure semantic
   assertion contributes the assertion verbatim and the host's own `evidence` string verbatim.
   Where a host recorded no evidence, the block says so rather than inventing a reason.
+- **`report.json` and `report.md` now carry each attempt's mechanical table and its recorded
+  verdicts**, not only its three counts. ADR 0020 §7 tells an operator to choose an attempt by
+  hand on exhaustion, and three integers describe no artifact anyone can choose between; the rows
+  and verdicts previously existed only in `attempt-<n>.json`, which ADR 0014 §1 calls internal
+  evidence that ships no schema. Both keys are additive to `pixelproof.report/1` and are `null`
+  rather than absent when there is nothing to say. An attempt whose evidence file is missing or
+  corrupt is listed with `evidenceUnreadable` rather than omitted, and never blocks finalisation.
 - A **mechanical** failure with the bound unspent is corrected and regenerated in the same
   process, because no host is involved and nothing has to wait. A **semantic** rejection is
   handled the other way round: `judge submit` records the verdicts, leaves the run open, prints
@@ -50,7 +57,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pending on it, so `judge pending` correctly does not list it; `doctor`'s `judgements:` line
   counts it instead (`N runs open between attempts`), and `judge abandon` now reaches it so it
   can be closed on the record. No verdict is discarded by that close: verdicts are written
-  before the run ever leaves `pending-judgement`.
+  before the run ever leaves `pending-judgement`. Such a run is identified by the
+  `retake-available` reason its rejection recorded, **not** by "`running` with an attempt" — that
+  looser reading also matches a healthy generation between two attempts.
+- `judge abandon` with `--run` omitted now considers open-between-attempts runs alongside pending
+  ones. With one of each it refuses and names both, where it previously closed the pending one: a
+  command that cannot prove which run is meant does not get to guess.
 - Round numbers run across the whole run rather than restarting per attempt, so attempt 2
   begins at round 3 and `judge-request-<round>.json` stays unique in one directory. ADR 0009
   §5's bound of two rounds is unchanged and is now explicitly **per attempt**; `rounds[]` and

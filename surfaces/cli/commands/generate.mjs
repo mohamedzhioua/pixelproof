@@ -204,9 +204,13 @@ export async function runGenerate(argv) {
     // spending the bound to change nothing. Refused at the front door so the
     // state can never arise, before any generation.
     if (judged !== null && judged.retakes > 1 && provider === 'svg') {
+      // Name where the bound came from: it may be `spec.retakes` rather than a
+      // flag, and blaming `--retakes` for a number the user never typed sends
+      // them looking in the wrong place.
+      const source = options.retakes ? '--retakes' : 'spec.retakes';
       throw new Error(
-        '--retakes needs a prompt-driven provider; the svg provider is given markup, '
-          + 'so a corrected prompt could not change what it produces.',
+        `a retake bound above 1 (${judged.retakes}, from ${source}) needs a prompt-driven provider; `
+          + 'the svg provider is given markup, so a corrected prompt could not change what it produces.',
       );
     }
 
@@ -286,7 +290,6 @@ export async function runGenerate(argv) {
       assertions: judged.assertions,
       deadlineMs: judged.deadlineMs,
       out: options.out,
-      bound: judged.retakes,
       // A mechanical failure needs no host, so the correction and the next
       // generation happen here rather than being handed back to an operator
       // (ADR 0020 §2).
