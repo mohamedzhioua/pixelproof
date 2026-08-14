@@ -9,8 +9,15 @@
  * adapter (ADR 0004) — so borrowing either of the other two enums would say
  * something false about where the failure came from.
  *
- * The set is closed at nine. ADR 0009 §3 enumerates exactly these, and a tenth
- * added here without an ADR would be a refusal nobody decided on.
+ * The set is closed at eleven, and it grew the only way a closed set should:
+ * ADR 0009 §3 enumerated the first nine, ADR 0020 §3 added exactly two more for
+ * the genuinely new conditions a retake can meet. A twelfth added here without
+ * an ADR would be a refusal nobody decided on.
+ *
+ * The retake path reuses `PENDING_ID_MALFORMED`, `PENDING_FOREIGN_ROOT`,
+ * `PENDING_NOT_FOUND` and `PENDING_SCHEMA_UNSUPPORTED` unchanged — same
+ * mechanism, same names — rather than minting parallel `RETAKE_*` spellings for
+ * failures that are not new.
  *
  * Several of them are this layer's name for a mechanism the store already has —
  * `PENDING_ID_MALFORMED` is `RUN_ID_MALFORMED` seen from the handoff, and
@@ -32,6 +39,9 @@ export const PENDING_REASONS = Object.freeze([
   'PENDING_CHECKS_MISMATCH',
   'PENDING_EXPIRED',
   'ARTIFACT_CHANGED',
+  // ADR 0020 §3.
+  'RETAKE_EXHAUSTED',
+  'RETAKE_NOT_OPEN',
 ]);
 
 const REASON_SET = new Set(PENDING_REASONS);

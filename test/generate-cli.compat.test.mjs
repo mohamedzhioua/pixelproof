@@ -30,10 +30,15 @@ import {
  * The three `--judge*` / `--run-dir` lines and the `Host judgement:` section were
  * added on 2026-08-13 under the amendment to ADR 0003, which permits purely
  * additive lines documenting a new flag while every existing line stays
- * byte-identical. Updating this constant is the deliberate act that amendment
- * requires: it is the evidence, so it is edited with intent, and it is never
- * deleted or loosened into a substring match to make a diff go away. Every line
- * that was here before is still here, unchanged and in the same order.
+ * byte-identical. The `--retakes` line and the `Retakes:` section were added the
+ * same way on 2026-08-14 for ADR 0020. Updating this constant is the deliberate
+ * act that amendment requires: it is the evidence, so it is edited with intent,
+ * and it is never deleted or loosened into a substring match to make a diff go
+ * away. Every line that was here before is still here, unchanged and in the same
+ * order — and that is not left to this comment to promise.
+ * `test/judge-cli.test.mjs` holds every pre-amendment line as an ordered
+ * subsequence, so a banner pasted in after rewording a historical line on the
+ * way still fails there.
  */
 const GENERATOR_USAGE = `pixelproof image generator
 
@@ -49,6 +54,7 @@ Options:
   --svg-file <path>        SVG source for the svg provider; otherwise read stdin
   --judge host             Ask the calling agent to judge the spec's semantic assertions
   --judge-deadline <dur>   How long the checklist stays answerable (default 24h)
+  --retakes <n>            Maximum total attempts in a judged run; needs --judge
   --run-dir <path>         Run root; also PIXELPROOF_RUN_ROOT (default .pixelproof/runs)
   -h, --help               Show this help
 
@@ -67,6 +73,13 @@ Host judgement:
   \`pixelproof judge submit\`. Needs a .png target and a spec with at least one "semantic"
   entry. --judge-deadline takes a duration such as 6h or 90m; a unit is required, because
   a bare number could be seconds or milliseconds.
+
+Retakes:
+  --retakes <n> bounds the total attempts inside one judged run and defaults to
+  spec.retakes, then to 1. It needs --judge: without one, generate makes exactly one
+  provider call, so honouring a bound would only change what the call costs. A rejected
+  attempt leaves the run open; continue it with \`pixelproof retake --run <id>\`. Nothing
+  is promoted on exhaustion.
 `;
 
 const VALID_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="#fff"/></svg>';

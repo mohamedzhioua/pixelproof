@@ -51,12 +51,48 @@ export function summariseRun(run) {
 }
 
 /**
+ * Merge each attempt's recorded evidence into its summary row.
+ *
+ * ADR 0020 §7 promises that on exhaustion "the report lists every attempt with
+ * its mechanical table and its verdicts so an operator can choose one by hand".
+ * The run record's `attempts[]` carries only *counts* — three integers describe
+ * no artifact anyone can choose between — and the rows and verdicts live in
+ * `attempt-<n>.json`, which ADR 0014 §1 calls internal evidence that ships no
+ * schema document. Without this merge the operator is told to choose by hand
+ * from a document with nothing to choose on.
+ *
+ * Both additions are purely additive to `pixelproof.report/1` (ADR 0014 §3), and
+ * both are `null` rather than absent when there is nothing to say, so a consumer
+ * never has to distinguish "no verdicts" from "an older build".
+ *
+ * An attempt record that cannot be read is reported as unreadable rather than
+ * omitted. Finalisation must still happen — a run that cannot reach a terminal
+ * state because one evidence file is corrupt would be worse — but a silently
+ * missing table would let the report imply an attempt had nothing wrong with it.
+ */
+function detailFor(details, number) {
+  const detail = details?.[number] ?? null;
+  if (detail === null || detail === undefined) return { checks: null, semantic: null };
+  if (detail.unreadable) {
+    return { checks: null, semantic: null, evidenceUnreadable: detail.unreadable };
+  }
+  return {
+    checks: Array.isArray(detail.verification?.checks) ? detail.verification.checks : null,
+    semantic: detail.semantic ?? null,
+  };
+}
+
+/**
  * Build the `report.json` document for a run.
  *
+ * Pure: `attemptDetails` is handed in by `finaliseRun`, which does the reading,
+ * so the report shape stays testable against a hand-built object with no
+ * directory in sight.
+ *
  * @param {object} run the run record as persisted
- * @param {{schema: string, generatedAt?: string}} options
+ * @param {{schema: string, generatedAt?: string, attemptDetails?: object}} options
  */
-export function buildReport(run, { schema, generatedAt = new Date().toISOString() }) {
+export function buildReport(run, { schema, generatedAt = new Date().toISOString(), attemptDetails = null }) {
   if (run === null || typeof run !== 'object') {
     throw new TypeError('buildReport requires a run record');
   }
@@ -78,7 +114,8 @@ export function buildReport(run, { schema, generatedAt = new Date().toISOString(
     resolved: run.resolved ?? {},
     summary: summariseRun(run),
     decisiveAttempt: decisive === null ? null : decisive.number,
-    attempts: Array.isArray(run.attempts) ? run.attempts : [],
+    attempts: (Array.isArray(run.attempts) ? run.attempts : [])
+      .map((attempt) => ({ ...attempt, ...detailFor(attemptDetails, attempt.number) })),
     reasons: Array.isArray(run.reasons) ? run.reasons : [],
     notes: Array.isArray(run.notes) ? run.notes : [],
     files: {
@@ -108,6 +145,13 @@ function outcomeSentence(report) {
 
 function table(rows) {
   return rows.map((row) => `| ${row.join(' | ')} |`).join('\n');
+}
+
+/** A check's expected/measured value as one table cell. A pipe would break the row. */
+function describeCell(value) {
+  if (value === null || value === undefined) return 'unrecorded';
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return text.replaceAll('|', '\\|');
 }
 
 /**
@@ -155,6 +199,61 @@ export function renderReportMarkdown(report) {
         ];
       }),
     ]));
+  }
+
+  // ADR 0020 §7's "choose one by hand" needs something to choose on. The table
+  // above is counts; this is what each attempt actually got wrong.
+  const detailed = report.attempts.filter(
+    (attempt) => attempt.checks !== null || attempt.semantic !== null || attempt.evidenceUnreadable,
+  );
+  if (detailed.length > 0) {
+    lines.push('');
+    lines.push('## Every attempt, in detail');
+    lines.push('');
+    lines.push('Nothing is promoted on exhaustion and no attempt is ranked — scoring is unbuilt,');
+    lines.push('so "best" would silently mean "last". Choose by reading what each one got wrong.');
+
+    for (const attempt of report.attempts) {
+      lines.push('');
+      lines.push(`### Attempt ${attempt.number}`);
+      lines.push('');
+      lines.push(`- Artifact: ${attempt.artifact?.path ?? '(none)'}`);
+
+      if (attempt.evidenceUnreadable) {
+        lines.push(`- **Its evidence file could not be read:** ${attempt.evidenceUnreadable}`);
+        continue;
+      }
+
+      if (Array.isArray(attempt.checks) && attempt.checks.length > 0) {
+        lines.push('');
+        lines.push(table([
+          ['Check', 'Expected', 'Measured', 'Status'],
+          ['---', '---', '---', '---'],
+          ...attempt.checks.map((check) => [
+            String(check.name ?? ''),
+            describeCell(check.expected),
+            describeCell(check.actual),
+            String(check.status ?? ''),
+          ]),
+        ]));
+      } else {
+        lines.push('- No mechanical table was recorded for this attempt.');
+      }
+
+      const verdicts = Array.isArray(attempt.semantic?.checks) ? attempt.semantic.checks : [];
+      if (verdicts.length > 0) {
+        lines.push('');
+        for (const verdict of verdicts) {
+          lines.push(`- **${String(verdict.verdict ?? '?').toUpperCase()}** ${verdict.assertion ?? verdict.id ?? ''}`.trimEnd());
+          lines.push(verdict.evidence
+            ? `  - the judge reported: ${verdict.evidence}`
+            : '  - the judge recorded no evidence for that verdict.');
+        }
+      } else {
+        lines.push('- No semantic verdicts were recorded for this attempt. '
+          + 'An unjudged assertion is unverified, never satisfied.');
+      }
+    }
   }
 
   if (report.reasons.length > 0) {

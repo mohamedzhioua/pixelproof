@@ -12,11 +12,26 @@
  *    outgoing edges at all. This is what makes ADR 0009's nonce single-use: a
  *    replayed submission finds a run that cannot leave its final state, so it is
  *    refused by the machine rather than by a check someone might forget.
- * 2. **Nothing returns to `running`.** ADR 0009 §1 is explicit that `judge
- *    submit` records verdicts and never re-runs the run. A state machine that
- *    allowed a re-entry into `running` would make regeneration-on-resume
- *    expressible, and the artifact the host actually looked at would stop being
- *    the artifact described.
+ * 2. **`pending-judgement` is the only state that returns to `running`, and only
+ *    for a new attempt number** (ADR 0020 §1).
+ *
+ *    This edge was absent, and the reason it was absent is worth keeping rather
+ *    than deleting: ADR 0009 §1 forbids regeneration-on-resume, because
+ *    re-running *the same* attempt "would produce a different artifact than the
+ *    one the host actually looked at, leaving verdicts that describe bytes which
+ *    no longer exist". That reason still holds and is still enforced —
+ *    everywhere except the one case that does not raise it. Attempt *n*'s bytes,
+ *    its mechanical table, its verdicts and its round files are immutable once
+ *    written; a retake occupies attempt *n+1*, a new numbered slot, and touches
+ *    none of them, so every verdict still describes exactly the bytes it was
+ *    formed against.
+ *
+ *    A state machine cannot express "only for a new attempt number", any more
+ *    than it can count rounds. The guard lives in `core/judge/retake.mjs` and in
+ *    the submit-side finalisation logic, which take this edge only while the
+ *    retake bound is unspent. What the machine still guarantees is the part that
+ *    matters most: `accepted -> running` is refused, so no closed run is ever
+ *    reopened and the nonce stays single-use.
  *
  * `accepted` is not stored as an independent field anywhere; it is projected
  * from the state by `acceptedFor()`, so there is no second thing that can
@@ -54,7 +69,13 @@ const TRANSITIONS = Object.freeze({
   // The self-edge is ADR 0009 §5's escalation: round 2 leaves the run pending.
   // Bounding rounds at 2 is the round counter's job, not the machine's — a state
   // machine cannot count.
-  [PENDING_JUDGEMENT]: Object.freeze([PENDING_JUDGEMENT, ACCEPTED, REJECTED, ABANDONED]),
+  //
+  // `-> RUNNING` is ADR 0020 §1's retake: a rejected attempt with the bound
+  // unspent leaves the run open for a *new* attempt number. See the header for
+  // why re-opening this particular edge does not raise the hazard ADR 0009 §1
+  // closed it against, and where the "new attempt number" half of the rule is
+  // enforced.
+  [PENDING_JUDGEMENT]: Object.freeze([RUNNING, PENDING_JUDGEMENT, ACCEPTED, REJECTED, ABANDONED]),
   [ACCEPTED]: Object.freeze([]),
   [REJECTED]: Object.freeze([]),
   [ABANDONED]: Object.freeze([]),

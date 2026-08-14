@@ -108,7 +108,12 @@ export async function runVerify(argv) {
 
     // Validated before the image is opened, so a target the host cannot judge
     // fails on the flag rather than after the work.
-    const judged = resolveJudgeOptions(options, { artifact: options.file, spec });
+    //
+    // `retakes: false` — `verify` inspects an image somebody else made, so there
+    // is no provider call to repeat. It neither honours `spec.retakes` nor
+    // validates it: rejecting a spec field this command cannot act on would make
+    // a spec that verified under v0.3.0 start failing (ADR 0020 §6).
+    const judged = resolveJudgeOptions(options, { artifact: options.file, spec, retakes: false });
 
     const result = await verifyImage({
       filePath: options.file,

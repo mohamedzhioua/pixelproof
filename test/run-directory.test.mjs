@@ -109,48 +109,105 @@ test('malformed run ids are refused before any path is built from them', () => {
 // State machine
 // ---------------------------------------------------------------------------
 
-test('every illegal state transition is refused, and terminal states are final', () => {
-  // Written out independently of core/run/state.mjs on purpose: a test that
-  // imported the same table it checks would pass for any table.
-  const legal = new Set([
-    `${RUNNING}->${PENDING_JUDGEMENT}`,
-    `${RUNNING}->${ACCEPTED}`,
-    `${RUNNING}->${REJECTED}`,
-    `${RUNNING}->${ABANDONED}`,
-    `${PENDING_JUDGEMENT}->${PENDING_JUDGEMENT}`,
-    `${PENDING_JUDGEMENT}->${ACCEPTED}`,
-    `${PENDING_JUDGEMENT}->${REJECTED}`,
-    `${PENDING_JUDGEMENT}->${ABANDONED}`,
-  ]);
+/**
+ * The transition table, written out independently of `core/run/state.mjs` on
+ * purpose: a test that imported the same table it checks would pass for any
+ * table.
+ *
+ * `pending-judgement -> running` was added by ADR 0020 §1 (a retake is a new
+ * attempt inside the same run). It is the *only* edge that decision opens, and
+ * editing this constant alone would destroy the protection it provides — so the
+ * test below also proves the updated table still bites on every pair it still
+ * refuses.
+ */
+const LEGAL_TRANSITIONS = new Set([
+  `${RUNNING}->${PENDING_JUDGEMENT}`,
+  `${RUNNING}->${ACCEPTED}`,
+  `${RUNNING}->${REJECTED}`,
+  `${RUNNING}->${ABANDONED}`,
+  `${PENDING_JUDGEMENT}->${RUNNING}`,
+  `${PENDING_JUDGEMENT}->${PENDING_JUDGEMENT}`,
+  `${PENDING_JUDGEMENT}->${ACCEPTED}`,
+  `${PENDING_JUDGEMENT}->${REJECTED}`,
+  `${PENDING_JUDGEMENT}->${ABANDONED}`,
+]);
 
-  const refused = [];
+/** Every ordered pair of states, as `from->to` keys. */
+function everyStatePair() {
+  const pairs = [];
   for (const from of RUN_STATES) {
-    for (const to of RUN_STATES) {
-      const key = `${from}->${to}`;
-      if (legal.has(key)) {
-        assert.equal(canTransition(from, to), true, `${key} should be legal`);
-        assert.equal(assertTransition(from, to), to);
-        continue;
-      }
+    for (const to of RUN_STATES) pairs.push(`${from}->${to}`);
+  }
+  return pairs;
+}
 
-      assert.equal(canTransition(from, to), false, `${key} should be refused`);
-      assert.throws(
-        () => assertTransition(from, to),
-        (error) => error instanceof RunError && error.code === 'RUN_STATE_TRANSITION_REFUSED',
-        `${key} must be refused`,
-      );
-      refused.push(key);
+/**
+ * The same table, *derived* from four named rules instead of transcribed.
+ *
+ * This is the guard on the guard, and it replaces an earlier attempt that did
+ * not work. That version mutated copies of `LEGAL_TRANSITIONS` and asserted the
+ * machine disagreed with each one — which is a tautology once the machine is
+ * known to match the unmutated set, and which passes unchanged against a machine
+ * that legalises `accepted -> running` if the constant is edited to match. It
+ * defended against exactly the edit it could not see.
+ *
+ * A derivation does work, because it does not mirror the table. Widening the
+ * machine and editing the constant to match still fails here, since the rules
+ * say otherwise; to get past all three you have to edit a numbered rule that
+ * cites its ADR, which is a deliberate act and not an accident.
+ */
+function tableFromRules() {
+  const legal = new Set();
+  for (const from of RUN_STATES) {
+    // Rule 1 (ADR 0014 §2): a terminal state has no outgoing edge at all. This
+    // is what makes ADR 0009's nonce single-use.
+    if ([ACCEPTED, REJECTED, ABANDONED].includes(from)) continue;
+
+    for (const to of RUN_STATES) {
+      // Rule 2: any open run may finish in any terminal way.
+      if ([ACCEPTED, REJECTED, ABANDONED].includes(to)) { legal.add(`${from}->${to}`); continue; }
+      // Rule 3 (ADR 0009 §5): any open run may become pending — `running` when a
+      // checklist is issued, `pending-judgement` again on escalation.
+      if (to === PENDING_JUDGEMENT) { legal.add(`${from}->${to}`); continue; }
+      // Rule 4 (ADR 0020 §1): only `pending-judgement` re-enters `running`, and
+      // only for a new attempt number. `running -> running` is not a transition.
+      if (to === RUNNING && from === PENDING_JUDGEMENT) legal.add(`${from}->${to}`);
     }
   }
+  return legal;
+}
 
-  // 25 pairs, 8 legal. Asserted as a count so a shrinking state set cannot make
-  // this test vacuous.
+test('every illegal state transition is refused, and terminal states are final', () => {
+  const legal = LEGAL_TRANSITIONS;
+
+  const refused = [];
+  for (const key of everyStatePair()) {
+    const [from, to] = key.split('->');
+    if (legal.has(key)) {
+      assert.equal(canTransition(from, to), true, `${key} should be legal`);
+      assert.equal(assertTransition(from, to), to);
+      continue;
+    }
+
+    assert.equal(canTransition(from, to), false, `${key} should be refused`);
+    assert.throws(
+      () => assertTransition(from, to),
+      (error) => error instanceof RunError && error.code === 'RUN_STATE_TRANSITION_REFUSED',
+      `${key} must be refused`,
+    );
+    refused.push(key);
+  }
+
+  // 25 pairs, 9 legal. Asserted as a count so a shrinking state set cannot make
+  // this test vacuous. It was 8 legal / 17 refused before ADR 0020 §1.
   assert.equal(RUN_STATES.length, 5);
-  assert.equal(refused.length, 17);
+  assert.equal(legal.size, 9);
+  assert.equal(refused.length, 16);
 
-  // The two that matter most, named for the record.
+  // The one that matters most, named for the record. `pending-judgement ->
+  // running` is now legal; `accepted -> running` is what keeps ADR 0009's nonce
+  // single-use, and it has its own test below.
   assert.ok(refused.includes(`${ACCEPTED}->${RUNNING}`), 'a closed run must never reopen');
-  assert.ok(refused.includes(`${PENDING_JUDGEMENT}->${RUNNING}`), 'submit records verdicts, it never re-runs');
 
   for (const state of [ACCEPTED, REJECTED, ABANDONED]) {
     for (const to of RUN_STATES) {
@@ -160,6 +217,54 @@ test('every illegal state transition is refused, and terminal states are final',
 
   assert.throws(() => assertTransition('running', 'finished'), (error) => error instanceof RunError);
   assert.throws(() => assertTransition('idle', 'accepted'), (error) => error instanceof RunError);
+});
+
+test('the table is not merely a transcript: four named rules derive it independently', () => {
+  // Editing LEGAL_TRANSITIONS to match a widened implementation is the obvious
+  // way to "fix" the test above. This is what makes that shortcut fail: the
+  // rules are stated in terms of terminality and of ADR 0020 §1's single edge,
+  // not as a copy of the pairs, so the constant and the machine cannot be
+  // quietly moved together.
+  const derived = tableFromRules();
+
+  assert.deepEqual(
+    [...derived].sort(),
+    [...LEGAL_TRANSITIONS].sort(),
+    'the golden table and the rules that justify it have drifted apart',
+  );
+
+  for (const key of everyStatePair()) {
+    const [from, to] = key.split('->');
+    assert.equal(canTransition(from, to), derived.has(key),
+      `the shipped machine disagrees with the derived rules on ${key}`);
+  }
+});
+
+test('pending-judgement is the only state that re-enters running (ADR 0020 §1)', () => {
+  // ADR 0020 re-opened exactly one edge. This invariant is asserted separately
+  // from the table so that widening it later is a deliberate act against a named
+  // rule rather than an unnoticed extra line in a set literal.
+  const reopens = RUN_STATES.filter((from) => canTransition(from, RUNNING));
+  assert.deepEqual(reopens, [PENDING_JUDGEMENT]);
+
+  // `accepted -> running` is what makes ADR 0009's nonce genuinely single-use: a
+  // replayed submission finds a run that cannot leave its final state. A retake
+  // must never widen this.
+  assert.equal(canTransition(ACCEPTED, RUNNING), false, 'an accepted run must never re-enter running');
+  assert.equal(canTransition(REJECTED, RUNNING), false, 'a rejected run must never re-enter running');
+  assert.equal(canTransition(ABANDONED, RUNNING), false, 'an abandoned run must never re-enter running');
+
+  assert.throws(
+    () => assertTransition(ACCEPTED, RUNNING),
+    (error) => error instanceof RunError
+      && error.code === 'RUN_STATE_TRANSITION_REFUSED'
+      && /accepted is final/.test(error.message),
+  );
+
+  // The new edge is real, not merely undeclared: prove it is taken, so this test
+  // cannot pass by the machine having no edges at all.
+  assert.equal(canTransition(PENDING_JUDGEMENT, RUNNING), true);
+  assert.equal(assertTransition(PENDING_JUDGEMENT, RUNNING), RUNNING);
 });
 
 test('accepted is a projection of state, never an independent field', () => {
@@ -371,8 +476,29 @@ test('the report matches the run it was written from', async () => {
     assert.equal(report.state, run.state);
     assert.equal(report.accepted, run.accepted);
     assert.deepEqual(report.outcome, run.outcome);
-    assert.deepEqual(report.attempts, run.attempts);
     assert.deepEqual(report.reasons, run.reasons);
+
+    // The report's attempts are the run record's, plus the evidence the run
+    // record does not carry (ADR 0020 §7). The summary half must still match
+    // exactly: a report that could say something `run.json` does not would be a
+    // second truth.
+    assert.deepEqual(
+      report.attempts.map(({ checks, semantic, ...summary }) => summary),
+      run.attempts,
+    );
+    // And the added half is really there, on every attempt, with the measured
+    // values an operator would choose between — not just the three counts.
+    assert.equal(report.attempts.length, 2);
+    for (const attempt of report.attempts) {
+      assert.ok(Array.isArray(attempt.checks), `attempt ${attempt.number} carries no mechanical table`);
+      assert.deepEqual(
+        attempt.checks.map((check) => [check.name, check.expected, check.actual, check.status]),
+        attempt.number === 1
+          ? [['width', 1024, 1024, 'FAIL']]
+          : [['width', 1024, 1024, 'PASS'], ['skipped-0', 'x', 'no decoder', 'SKIP']],
+      );
+      assert.equal(attempt.semantic, null, 'nothing judged this run, and the report says so rather than omitting it');
+    }
     assert.equal(report.pixelproofVersion, run.pixelproofVersion);
     assert.deepEqual(await readReport(created.directory), report);
 

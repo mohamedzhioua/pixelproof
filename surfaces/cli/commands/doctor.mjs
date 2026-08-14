@@ -53,7 +53,7 @@
  * fast-path-only imitation of it.
  */
 
-import { hasExpired, listPendingRuns } from '../../../core/judge/index.mjs';
+import { hasExpired, listPendingRuns, listStalledRuns } from '../../../core/judge/index.mjs';
 import { loadSharpDecoder } from '../../../core/verification/inspect.mjs';
 import { printUsage, printUsageError } from '../format-errors.mjs';
 import { parseArguments } from '../parse.mjs';
@@ -439,10 +439,23 @@ async function collectDecoder({ probe, timeoutMs }) {
  * A probe that fails reports zero *and says so*. Silently reporting zero would
  * be the confident-wrong answer this command exists not to give.
  */
-async function collectPending({ probe, timeoutMs }) {
+async function collectPending({ probe, stalledProbe, timeoutMs }) {
   const answer = await boundedProbe(probe, timeoutMs, 'the pending-judgement scan');
   if (!answer.ok) {
-    return { total: 0, expired: 0, unreadable: 0, error: answer.error };
+    return { total: 0, expired: 0, unreadable: 0, stalled: 0, error: answer.error };
+  }
+
+  // ADR 0020's orphan: a run left `running` because an operator never retook and
+  // never abandoned. Nothing is pending on it, so the scan above cannot see it,
+  // and ADR 0009 §4's "an abandoned handoff is visible to someone who never knew
+  // one happened" would quietly stop being true for the retake path.
+  //
+  // A failed orphan scan reports zero *and* fails the whole line, for the same
+  // reason the pending scan does: "none outstanding" and "I could not look" are
+  // different facts, and only one of them means there is nothing to do.
+  const stalledAnswer = await boundedProbe(stalledProbe, timeoutMs, 'the open-run scan');
+  if (!stalledAnswer.ok) {
+    return { total: 0, expired: 0, unreadable: 0, stalled: 0, error: stalledAnswer.error };
   }
 
   const now = new Date();
@@ -451,6 +464,7 @@ async function collectPending({ probe, timeoutMs }) {
     total: entries.length,
     expired: entries.filter((entry) => entry.record !== null && hasExpired(entry.record.expiresAt, now)).length,
     unreadable: entries.filter((entry) => entry.error !== null).length,
+    stalled: Array.isArray(stalledAnswer.value) ? stalledAnswer.value.length : 0,
     error: null,
   };
 }
@@ -468,10 +482,11 @@ export async function collectReport({
   const decoderProbe = probes?.decoder ?? loadSharpDecoder;
   const authProbe = probes?.auth ?? defaultAuthProbe;
   const pendingProbe = probes?.pending ?? (() => listPendingRuns({ runDir }));
+  const stalledProbe = probes?.stalled ?? (() => listStalledRuns({ runDir }));
 
   const providers = await collectProviders({ probe: providerProbe, authProbe, timeoutMs });
   const decoder = await collectDecoder({ probe: decoderProbe, timeoutMs });
-  const pending = await collectPending({ probe: pendingProbe, timeoutMs });
+  const pending = await collectPending({ probe: pendingProbe, stalledProbe, timeoutMs });
 
   const availableIds = providers.rows.filter((row) => row.available).map((row) => row.id);
   const ok = availableIds.length > 0;
@@ -517,12 +532,24 @@ function continuation(value) {
 export function describePending(pending) {
   if (!pending) return 'not scanned';
   if (pending.error) return `could not scan (${pending.error})`;
-  if (pending.total === 0) return 'none pending';
+
+  // ADR 0020's orphan is reported on the same line as the pending count, and
+  // reported even when nothing is pending — that is the whole case it exists
+  // for. A run between attempts has no outstanding judgement, so a line that
+  // only counted judgements would say "none pending" about a run nobody
+  // finished.
+  const stalled = (pending.stalled ?? 0) > 0
+    ? `${pending.stalled} run${pending.stalled === 1 ? '' : 's'} open between attempts`
+      + ' - pixelproof retake --run <id>, or judge abandon'
+    : '';
+
+  if (pending.total === 0) return stalled === '' ? 'none pending' : `none pending; ${stalled}`;
 
   const noun = pending.total === 1 ? 'judgement' : 'judgements';
   const unreadable = pending.unreadable > 0 ? `, ${pending.unreadable} unreadable` : '';
-  return `${pending.total} pending host ${noun} (${pending.expired} expired${unreadable})`
+  const line = `${pending.total} pending host ${noun} (${pending.expired} expired${unreadable})`
     + ' - pixelproof judge pending';
+  return stalled === '' ? line : `${line}; ${stalled}`;
 }
 
 /**

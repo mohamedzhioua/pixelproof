@@ -39,19 +39,47 @@ export const JUDGE_PENDING_SCHEMA = 'pixelproof.judge-pending/1';
 export const JUDGE_RESULT_SCHEMA = 'pixelproof.judge-result/1';
 
 /**
- * ADR 0009 §5 bounds escalation at two rounds. There is no round 3: a genuinely
- * ambiguous assertion terminates in `fail` rather than in an endless re-ask.
+ * ADR 0009 §5 bounds escalation at two rounds **per attempt**. There is no round
+ * 3 for an attempt: a genuinely ambiguous assertion terminates in `fail` rather
+ * than in an endless re-ask.
+ *
+ * Round *numbers* do not restart per attempt (ADR 0020 §5) — attempt 1 uses
+ * rounds 1 and possibly 2, attempt 2 starts at round 3 — which is what keeps
+ * `judge-request-<round>.json` unique inside one run directory without inventing
+ * a two-part filename. So this constant bounds `roundInAttempt`, not `round`,
+ * and the two are equal only on the first attempt.
  */
 export const MAX_ROUNDS = 2;
 
 /** The name this handoff answers to, and the only judge kind this build wires. */
 export const HOST_JUDGE = 'host';
 
+/**
+ * A round number: any positive integer, because rounds are numbered across the
+ * whole run. The two-per-attempt bound is enforced by `decideOutcome`, which can
+ * see which attempt a round belongs to; a filename helper cannot.
+ */
 function assertRound(round) {
-  if (!Number.isInteger(round) || round < 1 || round > MAX_ROUNDS) {
-    throw new TypeError(`round must be an integer from 1 through ${MAX_ROUNDS}`);
+  if (!Number.isInteger(round) || round < 1) {
+    throw new TypeError('round must be a positive integer');
   }
   return round;
+}
+
+/** The round's position inside its attempt: 1, or 2 for the escalation round. */
+function assertRoundInAttempt(roundInAttempt) {
+  if (!Number.isInteger(roundInAttempt) || roundInAttempt < 1 || roundInAttempt > MAX_ROUNDS) {
+    throw new TypeError(`roundInAttempt must be an integer from 1 through ${MAX_ROUNDS}`);
+  }
+  return roundInAttempt;
+}
+
+/** An attempt number: 1-based and contiguous (ADR 0014 §2). */
+function assertAttempt(attempt) {
+  if (!Number.isInteger(attempt) || attempt < 1) {
+    throw new TypeError('attempt numbers start at 1');
+  }
+  return attempt;
 }
 
 export function pendingRequestFile(round) {
@@ -78,6 +106,8 @@ function toEnvelopePath(relative) {
 export function buildPendingRecord({
   runId,
   round = 1,
+  attempt = 1,
+  roundInAttempt = round,
   checks,
   artifactPath,
   artifactSha256,
@@ -94,6 +124,11 @@ export function buildPendingRecord({
   issuer,
 } = {}) {
   assertRound(round);
+  assertAttempt(attempt);
+  assertRoundInAttempt(roundInAttempt);
+  if (roundInAttempt > round) {
+    throw new TypeError(`round ${round} cannot be position ${roundInAttempt} within its attempt`);
+  }
   if (!isNonce(nonce)) throw new TypeError('a pending record needs a 32-byte hex nonce');
   if (typeof artifactPath !== 'string' || artifactPath.trim() === '') {
     throw new TypeError('a pending record needs the artifact path, relative to the run directory');
@@ -117,6 +152,11 @@ export function buildPendingRecord({
     protocol: PROTOCOL_VERSION,
     runId,
     round,
+    // Which attempt this checklist is about, and where the round sits inside it
+    // (ADR 0020 §5). `round` stays unique across the run so the request filename
+    // stays unique; a reader who wants "round 1 of 2" reads `roundInAttempt`.
+    attempt,
+    roundInAttempt,
     maxRounds: MAX_ROUNDS,
     escalationTerminal,
     onUnsure,

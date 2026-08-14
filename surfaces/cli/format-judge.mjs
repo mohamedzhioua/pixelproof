@@ -18,6 +18,8 @@
  * surprise, so it is said out loud at the moment it matters.
  */
 
+import { renderCorrections } from '../../core/generation/correction.mjs';
+
 const defaultOutput = globalThis.console;
 
 /** The skeleton a submitter fills in. Real ids, real nonce, real digest. */
@@ -55,7 +57,15 @@ export function renderChecklist(record, { artifact, requestFile, remaining, out 
   lines.push('Pending host judgement — exit code 2 means an outstanding judgement, not a pass.');
   lines.push('');
   lines.push(field('Run', record.runId));
-  lines.push(field('Round', `${record.round} of ${record.maxRounds}`));
+  // `round` is numbered across the whole run and `roundInAttempt` inside the
+  // attempt (ADR 0020 §5); on the first attempt they are equal, which is why
+  // this line is byte-identical to what it always printed for a single-attempt
+  // run. The `Attempt` line appears only when there is more than one attempt to
+  // distinguish.
+  if ((record.attempt ?? 1) > 1) {
+    lines.push(field('Attempt', `${record.attempt} (run round ${record.round})`));
+  }
+  lines.push(field('Round', `${record.roundInAttempt ?? record.round} of ${record.maxRounds}`));
   lines.push(field('Artifact', artifact));
   lines.push(field('Expires', `${record.expiresAt} (${remaining})`));
   if (record.escalationTerminal) {
@@ -107,8 +117,9 @@ export function renderPendingList(entries, { describeRemaining, hasExpired, now 
     }
     const expired = hasExpired(entry.record.expiresAt, now);
     const marker = expired ? 'EXPIRED' : describeRemaining(entry.record.expiresAt, now);
+    const attempt = (entry.record.attempt ?? 1) > 1 ? `attempt ${entry.record.attempt}  ` : '';
     lines.push(
-      `  ${entry.runId}  round ${entry.record.round}/${entry.record.maxRounds}  `
+      `  ${entry.runId}  ${attempt}round ${entry.record.roundInAttempt ?? entry.record.round}/${entry.record.maxRounds}  `
         + `${entry.record.request.checks.length} check(s)  ${marker}`,
     );
   }
@@ -138,6 +149,56 @@ export function renderVerdicts(checks) {
 
 export function printVerdicts(checks, output = defaultOutput) {
   output.log(renderVerdicts(checks));
+}
+
+/**
+ * The corrections a retake will carry, shown before it is spent.
+ *
+ * Rendered by `core/generation/correction.mjs`, not by this module, so what the
+ * operator reads is the same text the generator is given — a summary written
+ * here would be a second version of the correction that could disagree with the
+ * one that was actually sent.
+ */
+export function printCorrections(corrections, { attempt }, output = defaultOutput) {
+  const block = renderCorrections(corrections, { attempt });
+  if (block.trim() !== '') output.log(block.replace(/^\n/, ''));
+}
+
+/**
+ * What `judge submit` prints when a rejected attempt leaves the run open
+ * (ADR 0020 §2).
+ *
+ * `judge submit` never generates: it records, decides, and prints. The next
+ * generation is a separate invocation the operator chooses to spend, which is
+ * what keeps `--interactive` on a human's terminal from silently starting a
+ * paid call. So the exact command is printed rather than run.
+ */
+export function renderRetakeOffer({ runId, attempt, retakesLeft, bound, corrections, runDir = null }) {
+  const lines = [];
+  lines.push(
+    `Attempt ${attempt} was rejected. ${retakesLeft} of ${bound} attempt(s) remain, `
+      + 'so the run is still open — nothing was accepted and nothing was promoted.',
+  );
+
+  const block = renderCorrections(corrections, { attempt });
+  if (block.trim() !== '') {
+    lines.push('');
+    lines.push(block.replace(/^\n/, ''));
+  }
+
+  lines.push('');
+  lines.push('Spend the next attempt when you are ready:');
+  lines.push('');
+  lines.push(`  pixelproof retake --run ${runId}${runDir === null ? '' : ` --run-dir ${runDir}`}`);
+  lines.push('');
+  lines.push('or close the run on the record without spending one:');
+  lines.push('');
+  lines.push(`  pixelproof judge abandon --run ${runId} --reason "<why>"`);
+  return lines.join('\n');
+}
+
+export function printRetakeOffer(offer, output = defaultOutput) {
+  output.log(renderRetakeOffer(offer));
 }
 
 /**

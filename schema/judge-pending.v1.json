@@ -27,10 +27,25 @@
       "description": "The adapter protocol version the `request` block speaks. Versioned separately from `schema` because the two boundaries have opposite unknown-field policies (ADR 0014 §4)."
     },
     "runId": { "$ref": "#/$defs/runId" },
-    "round": { "type": "integer", "minimum": 1, "maximum": 2 },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The run-wide round number, which is also the number in this file's own name. Rounds do not restart per attempt (ADR 0020 §5) — attempt 2 starts at round 3 — so this is not bounded at 2. Read `roundInAttempt` for \"round 1 of 2\"."
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Which attempt this checklist is about. Absent on records written before ADR 0020, where it is 1 because only one attempt could exist."
+    },
+    "roundInAttempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2,
+      "description": "Where this round sits inside its attempt: 1, or 2 for the escalation round. This is the number `maxRounds` bounds. Absent on records written before ADR 0020, where it equals `round`."
+    },
     "maxRounds": {
       "const": 2,
-      "description": "ADR 0009 §5 bounds escalation at two rounds. There is no round 3: a genuinely ambiguous assertion terminates in `fail` rather than in an endless re-ask."
+      "description": "ADR 0009 §5 bounds escalation at two rounds PER ATTEMPT. There is no round 3 for an attempt: a genuinely ambiguous assertion terminates in `fail` rather than in an endless re-ask. It bounds `roundInAttempt`, not `round`."
     },
     "escalationTerminal": {
       "type": "boolean",

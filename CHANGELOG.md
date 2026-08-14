@@ -4,6 +4,76 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Retakes under a judged run** (ADR 0020). A retake is a new numbered attempt **inside the
+  same run directory** — `attempt-2.png` beside `attempt-2.json` — not a new run and not a
+  chain of linked runs. Attempt *n*'s bytes, mechanical table, verdicts and round files are
+  immutable once written; attempt *n+1* occupies a new slot and touches none of them.
+- `--retakes <n>` on `generate`, bounding the total attempts inside one judged run. The bound
+  is `--retakes`, else `spec.retakes`, else **1**. It is honoured **only** with `--judge`:
+  without one, `generate` still makes exactly one provider call, `--retakes` is refused, and
+  `spec.retakes` is not read at all. `spec.retakes` has been declared in the example spec and
+  documented since v0.1.0 but was read by no code; honouring it unconditionally now would
+  silently triple what every existing caller with a spec spends.
+- `pixelproof retake --run <id> [--run-dir <path>] [--judge-deadline <dur>]`, a new top-level
+  command. The prompt, spec, provider, size and output come from the run record. It refuses,
+  with exit 1 and a named reason, a run that is terminal, has an outstanding judgement, asked
+  for no judge, or has spent its bound — adding exactly two codes to ADR 0009 §3's closed set,
+  `RETAKE_EXHAUSTED` and `RETAKE_NOT_OPEN`, and reusing the four id and envelope refusals
+  unchanged.
+- **Corrections are assembled from recorded evidence, never invented.** A failed mechanical
+  check contributes its name, expected value and measured value; a failed or unsure semantic
+  assertion contributes the assertion verbatim and the host's own `evidence` string verbatim.
+  Where a host recorded no evidence, the block says so rather than inventing a reason.
+- **`report.json` and `report.md` now carry each attempt's mechanical table and its recorded
+  verdicts**, not only its three counts. ADR 0020 §7 tells an operator to choose an attempt by
+  hand on exhaustion, and three integers describe no artifact anyone can choose between; the rows
+  and verdicts previously existed only in `attempt-<n>.json`, which ADR 0014 §1 calls internal
+  evidence that ships no schema. Both keys are additive to `pixelproof.report/1` and are `null`
+  rather than absent when there is nothing to say. An attempt whose evidence file is missing or
+  corrupt is listed with `evidenceUnreadable` rather than omitted, and never blocks finalisation.
+- A **mechanical** failure with the bound unspent is corrected and regenerated in the same
+  process, because no host is involved and nothing has to wait. A **semantic** rejection is
+  handled the other way round: `judge submit` records the verdicts, leaves the run open, prints
+  the correction and the exact retake command, and **exits 1**. It never generates, so
+  `judge submit --interactive` on a human's terminal still cannot start a paid call.
+
+### Changed
+
+- `pending-judgement -> running` is now a legal transition (ADR 0020 §1), taken only by the
+  finalisation logic that is starting a new attempt number while the bound is unspent. The
+  state *set* is unchanged, so there is no `pixelproof.run/2` bump and no consumer that
+  switches exhaustively on `state` breaks. **`accepted -> running` stays refused**, which is
+  what keeps ADR 0009's nonce single-use.
+- **`running` now carries a second meaning for a consumer:** not only "no attempt has finished
+  yet" but also "an attempt was rejected and the next one has not started". `accepted` stays
+  `null` in both — the run has not decided — and the difference is legible from `attempts[]`
+  and from the rejection already in `reasons[]`. A consumer that read `running` as "nothing has
+  been judged yet" is now wrong.
+- **A run can end in `running`** if an operator never retakes and never abandons. Nothing is
+  pending on it, so `judge pending` correctly does not list it; `doctor`'s `judgements:` line
+  counts it instead (`N runs open between attempts`), and `judge abandon` now reaches it so it
+  can be closed on the record. No verdict is discarded by that close: verdicts are written
+  before the run ever leaves `pending-judgement`. Such a run is identified by the
+  `retake-available` reason its rejection recorded, **not** by "`running` with an attempt" — that
+  looser reading also matches a healthy generation between two attempts.
+- `judge abandon` with `--run` omitted now considers open-between-attempts runs alongside pending
+  ones. With one of each it refuses and names both, where it previously closed the pending one: a
+  command that cannot prove which run is meant does not get to guess.
+- Round numbers run across the whole run rather than restarting per attempt, so attempt 2
+  begins at round 3 and `judge-request-<round>.json` stays unique in one directory. ADR 0009
+  §5's bound of two rounds is unchanged and is now explicitly **per attempt**; `rounds[]` and
+  the pending record both record which attempt a round judges.
+- `skills/image/SKILL.md` no longer runs a prose retake loop of its own bounded at 3, and no
+  longer copies a "best attempt" to the requested output on exhaustion. **Nothing is promoted
+  on exhaustion**: the run finalises rejected, `--out` stays empty, and the report lists every
+  attempt so an operator can choose one by hand. A file at `--out` is the signal that the spec
+  was satisfied, a labelled exception is a label a build script does not read, and there is no
+  ranking function to appeal to because scoring is unbuilt — "best" would silently mean "last".
+
 ## [0.3.0] - 2026-08-14
 
 ### Added

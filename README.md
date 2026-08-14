@@ -29,9 +29,12 @@ leaving judgments such as "no invented branding" to Claude's eyes.
 > every entry visibly. `--judge host` makes that a recorded step rather than a convention —
 > see [`pixelproof judge`](#pixelproof-judge).
 
-When either tier finds a real failure, Claude refines the prompt with the specific violation
-and retakes the image. The loop is bounded by `retakes`; failure is reported rather than
-accepted or retried forever.
+Inside a judged run (`--judge host`), a mechanical failure is corrected and retaken by the
+tool itself, in the same process; a semantic rejection leaves the run open and names the exact
+`pixelproof retake` command to continue it. Either way the loop is bounded by `--retakes`, else
+`spec.retakes`, else one attempt — never retried forever, and nothing is promoted when the
+bound is spent. Without `--judge`, `generate` makes exactly one attempt and the spec's
+`retakes` field is not read at all. See [`pixelproof retake`](#pixelproof-retake).
 
 ## Install
 
@@ -122,7 +125,10 @@ accepts ratios such as `1:1` and `16:9` with an absolute ratio tolerance of 0.01
 samples all four corner pixels against `expect` using per-channel `tolerance` (default 3).
 `alpha` is `opaque`, `transparent` (at least one pixel has alpha below 255), or `any`.
 `maxBytes` is an integer upper bound. An empty or absent mechanical block passes with a note.
-`retakes` is the maximum total number of attempts used by the image skill and defaults to 3.
+`retakes` bounds the total attempts inside a judged run and is read only under `--judge host`;
+without `--judge`, `--retakes` is refused on the command line and `spec.retakes` is not read at
+all — a bare `generate` makes exactly one provider call regardless of what the spec says. It
+defaults to 1 attempt when absent. See [`pixelproof retake`](#pixelproof-retake).
 
 ## Standalone CLI
 
@@ -132,7 +138,7 @@ unchanged. They share the same handlers in the same process, so they are synonym
 two dialects — identical flags, output and exit codes.
 
 ```sh
-pixelproof <command> [options]     # generate | verify | doctor | judge
+pixelproof <command> [options]     # generate | verify | doctor | judge | retake
 node bin/pixelproof.mjs verify --file lamp.png --spec specs/product-hero.example.json
 node scripts/verify.mjs   --file lamp.png --spec specs/product-hero.example.json
 ```
@@ -195,7 +201,7 @@ pixelproof judge submit --run <id> --results verdicts.json
 | `pixelproof judge pending [--json]` | Open judgements with age, deadline and expiry. Exits `2` while any exist, so it works as a CI or pre-commit gate. |
 | `pixelproof judge show --run <id> [--request]` | Print the checklist; `--request` prints the bare protocol-1 request a judge can consume verbatim. |
 | `pixelproof judge submit [--run <id>] [--results <path>\|-] [--interactive]` | Record verdicts and finalise. `--interactive` prompts per check and refuses when stdin is not a terminal. |
-| `pixelproof judge abandon --run <id> --reason "<why>"` | Close a pending run as rejected, on the record. |
+| `pixelproof judge abandon --run <id> --reason "<why>"` | Close a run as rejected, on the record — a pending one, or one left open between retake attempts. |
 
 `--run` may be omitted only when exactly one run is pending; two or more is refused naming
 each candidate, because a run that cannot prove which record is its own does not get to
@@ -209,9 +215,11 @@ is refused with a named reason — `PENDING_NONCE_MISMATCH`, `PENDING_CHECKS_MIS
 `PENDING_EXPIRED`, `ARTIFACT_CHANGED` and five more — recorded in `run.json` and printed by
 the report.
 
-An `unsure` verdict escalates once: a second round re-asks only the unsure assertions with
-`unsure` resolving to `fail`, and the round-2 verdict *replaces* the round-1 one rather than
-joining it. There is no third round, so a genuinely ambiguous assertion terminates in `fail`.
+An `unsure` verdict escalates once **per attempt**: a second round re-asks only the unsure
+assertions with `unsure` resolving to `fail`, and the round-2 verdict *replaces* the round-1
+one rather than joining it. There is no third round for an attempt, so a genuinely ambiguous
+assertion terminates in `fail`. Round numbers run across the whole run rather than restarting,
+so a retaken run's second attempt begins at round 3.
 
 Evidence lives in `.pixelproof/runs/<run id>/` — `run.json`, the attempt and its mechanical
 table, `judge-request-<round>.json`, `judge-result-<round>.json`, `report.json` and
@@ -223,6 +231,47 @@ an abandoned run directory is retained, because the evidence is the point.
 `--judge host` needs a `.png` target and a spec with at least one `semantic` entry, and it
 refuses both up front rather than after spending a generation. Subprocess judges exist in the
 codebase but are not wired to `generate`/`verify` yet, so `host` is the only accepted value.
+
+### `pixelproof retake`
+
+Spend another attempt on a run that a judged rejection left open. `--retakes` bounds the total
+attempts inside one judged run (`--retakes <n>`, else `spec.retakes`, else 1). It needs
+`--judge`: without one, `generate` makes exactly one provider call and honouring the bound
+would only change what that call costs.
+
+A **mechanical** failure with the bound unspent is corrected and regenerated by `generate`
+itself, in the same process — no host is involved, so nothing has to wait. A **semantic**
+rejection is the opposite case: the two verdicts arrive in different processes, so
+`judge submit` records them, leaves the run `running`, and prints the exact command rather
+than starting a paid call nobody authorised.
+
+```sh
+pixelproof retake --run <id> [--run-dir <path>] [--judge-deadline <dur>]
+```
+
+The prompt, spec, provider, size and output all come from the run record; the correction is
+assembled from what the rejected attempt actually recorded — a failed mechanical check
+contributes its name, expected and measured value, and a failed or unsure semantic assertion
+contributes the assertion and the judge's own evidence, verbatim. Where a host recorded no
+evidence, the correction says so rather than inventing a reason. The retake is a new numbered
+attempt inside the same run directory (`attempt-2.png` beside `attempt-2.json`), not a new
+run, and attempt 1's bytes, mechanical table, verdicts and round files are untouched by it.
+
+It exits `1` on rejection or refusal — a terminal run, an outstanding judgement, a run that
+asked for no judge, or a spent bound — and `2` when a new checklist is outstanding. There is
+no `0`, because acceptance is `judge submit`'s to grant.
+
+**Nothing is promoted on exhaustion.** When the bound is spent and no attempt was accepted, the
+run finalises rejected, `--out` stays empty, and the report lists every attempt with its
+mechanical table and verdicts so an operator can choose one by hand — there is no ranking
+function to appeal to, since scoring is unbuilt, and "best" would silently mean "last".
+
+A run left open between attempts has nothing pending, so `judge pending` does not list it.
+`doctor`'s `judgements:` line counts it, and `judge abandon` closes it on the record without
+discarding any verdict already submitted.
+
+`--retakes > 1` is refused with the `svg` provider: a retake is a corrected prompt, and the svg
+provider is handed markup, so a second attempt would reproduce the first byte for byte.
 
 ### The script form
 
