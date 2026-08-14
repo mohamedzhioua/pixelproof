@@ -1,7 +1,7 @@
 {
   "name": "pixelproof",
   "description": "AI images that pass your spec - generate via Codex from inside Claude Code, verify every pixel, retake until correct. No API key required.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "mohamedzhioua"
   },

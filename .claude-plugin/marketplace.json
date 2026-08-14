@@ -8,7 +8,7 @@
     {
       "name": "pixelproof",
       "description": "Generate and verify spec-driven raster and vector assets from Claude Code.",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "source": "./"
     }
   ]
