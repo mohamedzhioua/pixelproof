@@ -297,3 +297,19 @@ both roles. Both calls are recorded on purpose — the earlier refusal is not su
 the labelling ever slips, shipping an unproven path becomes the wrong call retroactively. Verify
 against the real CLI once quota returns (**2026-08-18**), then update this note and the CHANGELOG
 with the observed output — or say plainly that it still has not run.
+
+**How that trial must be built, or it proves nothing.** A green end-to-end run on a spec whose
+assertions are all true demonstrates that the plumbing carries bytes, not that a judgement
+happened: a vendor returning `pass` for everything is indistinguishable from a working judge.
+So the spec must plant assertions whose *correct* answers are not all `pass`:
+
+- **One assertion that must come back `fail`** — deliberately false about the generated image.
+  This is the discrimination test, and it is the same technique that proved `judges/codex.mjs`
+  in isolation.
+- **One assertion that should come back `unsure`**, if a cheap one can be written. The tri-state
+  is the part no fake has ever exercised against a real model, and under a subprocess judge with
+  no host in the panel `unsure` now *decides the run* rather than escalating. That path has never
+  been exercised by anything but a fixture that was told what to return.
+
+Record the verbatim verdicts, not a summary. If the model returns `pass` for the planted false
+assertion, the trial has failed and the wiring is not proven, however green the run looks.
